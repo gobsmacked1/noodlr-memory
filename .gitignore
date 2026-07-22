@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Local env / secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Vector store data (vectra JSON index, etc.)
+data/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log

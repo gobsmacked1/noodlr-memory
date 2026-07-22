@@ -1,0 +1,11 @@
+# Normalize line endings to LF. This service runs on Linux; author on Windows,
+# commit LF so runtime files never carry CRLF.
+* text=auto eol=lf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
+*.woff binary
+*.woff2 binary

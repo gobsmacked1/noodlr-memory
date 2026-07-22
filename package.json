@@ -1,0 +1,29 @@
+{
+  "name": "noodlr-memory",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Companion vector/RAG memory service for the Noodlr Foundry VTT module. Provides embeddings + a pluggable vector store (Chroma default, Qdrant, or file-based Vectra) split into per-purpose collections.",
+  "bin": {
+    "noodlr-memory": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "sanitize-filename": "^1.6.3",
+    "vectra": "^0.11.0"
+  },
+  "optionalDependencies": {
+    "chromadb": "^1.10.5",
+    "@qdrant/js-client-rest": "^1.13.0",
+    "pdf-parse": "^1.1.1",
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "license": "MIT"
+}
