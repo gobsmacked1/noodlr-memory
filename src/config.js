@@ -42,6 +42,11 @@ export const config = {
   root: ROOT,
   host: str("NOODLR_MEMORY_HOST", "127.0.0.1"),
   port: num("NOODLR_MEMORY_PORT", 3010),
+  // Optional Unix domain socket. When set, the service listens ONLY on this socket (host/port
+  // are ignored) — the intended mode behind a reverse proxy (nginx) so nothing binds a TCP
+  // port. socketMode is applied via chmod so the proxy user (e.g. www-data) can connect.
+  socketPath: str("NOODLR_MEMORY_SOCKET", ""),
+  socketMode: str("NOODLR_MEMORY_SOCKET_MODE", "660"),
   secret: str("NOODLR_MEMORY_SECRET", ""),
   maxBodyMb: num("NOODLR_MEMORY_MAX_BODY_MB", 32),
   backend: str("VECTOR_BACKEND", "lancedb").toLowerCase(),

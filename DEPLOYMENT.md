@@ -234,6 +234,11 @@ ExecStart=/usr/bin/node src/index.js
 Restart=on-failure
 RestartSec=3
 
+# Unix-socket mode (see §6): create /run/noodlr-memory owned by this service, traversable
+# by the proxy user's group. Uncomment when NOODLR_MEMORY_SOCKET is set.
+# RuntimeDirectory=noodlr-memory
+# RuntimeDirectoryMode=0750
+
 # Hardening (least privilege)
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -265,34 +270,83 @@ curl -s http://127.0.0.1:3010/v1/health -H "x-noodlr-secret: $YOUR_SECRET"
 
 ## 6. Exposing to other machines (optional)
 
-By default the service binds `127.0.0.1` and is reached only from the same host.
-If Foundry runs elsewhere:
+The Foundry module's RAG client runs in the **browser** (the GM's/players' machines),
+never on the Foundry host — so the service must be reachable from those clients. The default
+`127.0.0.1` bind is not. Three ways to expose it, best first:
 
-- Prefer an SSH tunnel or a reverse proxy (nginx/Caddy) terminating TLS, rather
-  than binding `0.0.0.0` directly.
-- Always set a strong `NOODLR_MEMORY_SECRET`.
-- Restrict with a firewall (`ufw allow from <foundry-ip> to any port 3010`).
+### Option A — Reverse proxy behind nginx via a Unix socket (recommended)
 
-Example Caddy block (TLS + forward):
+No TCP port is opened at all: the service listens on a Unix socket and nginx (already
+terminating TLS for Foundry) proxies a path such as `/memory/` to it. This adds TLS, a single
+public origin reachable from anywhere, and a protection layer in front of the service.
 
-```
-memory.example.com {
-    reverse_proxy 127.0.0.1:3010
-}
-```
+1. Configure the socket in `.env` (HOST/PORT are then ignored):
 
-Then set the module's RAG service URL to `https://memory.example.com`.
+   ```
+   NOODLR_MEMORY_SOCKET=/run/noodlr-memory/noodlr-memory.sock
+   NOODLR_MEMORY_SOCKET_MODE=660
+   NOODLR_MEMORY_SECRET=<strong secret>
+   ```
+
+2. Let systemd own the socket dir and let nginx's user reach it (uncomment
+   `RuntimeDirectory`/`RuntimeDirectoryMode` in the unit, §5), then:
+
+   ```bash
+   sudo usermod -aG noodlr www-data     # nginx user joins the service group (mode 660)
+   sudo systemctl daemon-reload && sudo systemctl restart noodlr-memory
+   sudo systemctl reload nginx
+   ```
+
+3. Add a location to the existing Foundry HTTPS `server { }` block. The `:/` after the socket
+   strips the `/memory/` prefix so the service still sees `/v1/...`:
+
+   ```nginx
+   location /memory/ {
+       proxy_pass http://unix:/run/noodlr-memory/noodlr-memory.sock:/;
+       include /etc/nginx/snippets/proxy-common.conf;
+       client_max_body_size 32m;    # match NOODLR_MEMORY_MAX_BODY_MB (large PDF/TXT ingests)
+       proxy_read_timeout 300s;     # embedding/ingest can take a while
+   }
+   ```
+
+4. In the module's **Memory & Knowledge** window set **Service URL** to
+   `https://endless.secretdoor.app/memory` (no trailing slash — the client appends `/v1/...`).
+   Verify from anywhere:
+
+   ```bash
+   curl -s https://endless.secretdoor.app/memory/v1/health -H "x-noodlr-secret: $SECRET"
+   # {"ok":true,"backend":"lancedb"}
+   ```
+
+> Public exposure means the **shared secret is the only guard** on write/purge endpoints. The
+> module currently stores that secret world-scope (readable by every connected client). Pair
+> this with GM-gated retrieval + a GM-scoped secret (so only the GM's browser ever calls the
+> service), or restrict `/memory/` further (e.g. nginx `allow`/`deny` or basic-auth) if any
+> client on the origin should not hold write access.
+
+### Option B — Reverse proxy over a local TCP port
+
+Same as A but the service keeps its default TCP bind and nginx targets it:
+`proxy_pass http://127.0.0.1:3010/;`. Simpler if you don't want a socket; still no public TCP.
+
+### Option C — Direct LAN bind (trusted LAN only)
+
+Set `NOODLR_MEMORY_HOST=0.0.0.0`, keep a strong secret, and firewall to the LAN:
+`sudo ufw allow from 192.168.10.0/24 to any port 3010 proto tcp`. No TLS; use only on a
+trusted network.
 
 ---
 
 ## 7. Connect the Noodlr module
 
-In Foundry: Noodlr settings → **Memory (RAG)** tab:
+In Foundry: Noodlr settings → **Memory & Knowledge** window:
 
-1. Enable vector memory; set **Service URL** and **Service secret** to match `.env`.
-2. Choose the embedding provider/model matching the service.
-3. Click **Test service** — it should report the backend and per-collection counts.
-4. Force-ingest compendiums and import TXT/PDF docs into the collections you want.
+1. Tick enable; set **Service URL** (e.g. `https://endless.secretdoor.app/memory`) and the
+   write-only **shared secret** to match `.env`.
+2. Choose the embedding provider/model matching the service (or leave server-side).
+3. Click **Test connection** — it should report the backend (`lancedb`).
+4. Open **Manage Memory** to force-ingest compendiums and import TXT/PDF docs into the
+   silos you want.
 
 ---
 
