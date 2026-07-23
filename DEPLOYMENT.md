@@ -319,10 +319,10 @@ public origin reachable from anywhere, and a protection layer in front of the se
    ```
 
 > Public exposure means the **shared secret is the only guard** on write/purge endpoints. The
-> module currently stores that secret world-scope (readable by every connected client). Pair
-> this with GM-gated retrieval + a GM-scoped secret (so only the GM's browser ever calls the
-> service), or restrict `/memory/` further (e.g. nginx `allow`/`deny` or basic-auth) if any
-> client on the origin should not hold write access.
+> module is GM-gated for this: only the GM's client ever contacts noodlr-memory, and the secret
+> is stored **client-scope** on the GM's machine (never synced to player browsers). Keep it that
+> way — don't hand the secret to players. For defense in depth on an internet-facing origin you
+> can still restrict `/memory/` with nginx `allow`/`deny` or basic-auth.
 
 ### Option B — Reverse proxy over a local TCP port
 
