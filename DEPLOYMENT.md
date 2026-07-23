@@ -46,6 +46,11 @@ sudo -u noodlr npm install @huggingface/transformers # if EMBED_PROVIDER=transfo
 sudo -u noodlr npm install pdf-parse             # if you import PDFs
 ```
 
+> **Do not use `--omit=optional`.** LanceDB's compiled binary ships as a platform-specific
+> *optional* dependency (the same pattern as esbuild/sharp), so omitting optionals removes the
+> native module and LanceDB won't load. `--omit=dev` is correct. Any `onnxruntime-node`/`sharp`
+> install-script warnings are harmless unless you use the in-process `transformers` embedder.
+
 ---
 
 ## 2. Configuration
@@ -65,8 +70,8 @@ Key settings:
 - `NOODLR_MEMORY_SECRET` — set a long random secret; the module must send the
   same value. Generate one: `openssl rand -hex 32`.
 - `VECTOR_BACKEND` — `lancedb` | `vectra` | `qdrant` | `chroma` (section 3).
-- `LANCEDB_URI` — LanceDB data dir (default `<DATA_DIR>/lancedb`; set to an existing
-  store such as `/opt/lancedb_data` if you have one).
+- `LANCEDB_URI` — optional. Leave unset to keep LanceDB self-contained under
+  `<DATA_DIR>/lancedb` (recommended). Only set it to use an external directory.
 - `EMBED_PROVIDER` / `EMBED_MODEL` / `EMBED_BASE_URL` / `EMBED_API_KEY` (section 4).
 
 > The embedding config can also be supplied per-request from the module's RAG
@@ -79,18 +84,22 @@ Key settings:
 ### Option A — LanceDB (embedded, recommended)
 
 Nothing extra to run: LanceDB is an in-process columnar vector store (no server, no
-Python). The `@lancedb/lancedb` native module ships with the core deps. Set
-`VECTOR_BACKEND=lancedb` and `LANCEDB_URI` (default `<DATA_DIR>/lancedb`). Data is written
-as Lance files in that directory — back it up like any data folder.
+Python). The `@lancedb/lancedb` native module installs with the core deps. Just set
+`VECTOR_BACKEND=lancedb` and leave `LANCEDB_URI` unset — data lands self-contained under
+`<DATA_DIR>/lancedb` (default `/opt/noodlr-memory/data/lancedb`), created automatically.
+Back up that folder like any data directory; that's the whole database.
+
+To use an external directory instead, set `LANCEDB_URI=/path/to/dir` and ensure the service
+user owns it:
 
 ```bash
 sudo mkdir -p /opt/lancedb_data && sudo chown noodlr:noodlr /opt/lancedb_data
 # in .env:  VECTOR_BACKEND=lancedb   LANCEDB_URI=/opt/lancedb_data
 ```
 
-> Only one process may write a LanceDB directory at a time. If you were experimenting with a
-> separate Python LanceDB/FastAPI server against the same folder, stop it — noodlr-memory now
-> owns that directory.
+> Only one process may write a LanceDB directory at a time. If you experimented with a
+> separate Python LanceDB/FastAPI server against a folder, stop and remove it — noodlr-memory
+> is the sole writer now.
 
 ### Option B — Vectra (no external service)
 
