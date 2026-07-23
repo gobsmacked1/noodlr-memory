@@ -1,8 +1,10 @@
 import { VectraStore } from "./vectra-store.js";
 import { ChromaStore } from "./chroma-store.js";
 import { QdrantStore } from "./qdrant-store.js";
+import { LanceStore } from "./lance-store.js";
 
 const BACKENDS = {
+  lancedb: LanceStore,
   vectra: VectraStore,
   chroma: ChromaStore,
   qdrant: QdrantStore,
@@ -20,4 +22,4 @@ export async function createStore(config) {
   return store;
 }
 
-export { VectraStore, ChromaStore, QdrantStore };
+export { LanceStore, VectraStore, ChromaStore, QdrantStore };

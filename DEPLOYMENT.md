@@ -6,7 +6,7 @@ vector database, split into per-purpose collections (silos) that can be reset
 independently.
 
 ```
-Foundry (browser)  ──HTTP──▶  noodlr-memory  ──▶  vector DB (Chroma / Qdrant / Vectra)
+Foundry (browser)  ──HTTP──▶  noodlr-memory  ──▶  vector DB (LanceDB / Qdrant / Chroma / Vectra)
    Noodlr module                  │
                                   └──▶  embeddings: OpenRouter | local server | in-process
 ```
@@ -19,8 +19,8 @@ options, and how to run embeddings locally (no cloud) if you prefer.
 ## 1. Prerequisites
 
 - Linux with **Node.js >= 20** (`node -v`). Install via your distro or nodesource.
-- A vector backend (pick one in section 3). The zero-dependency default is Vectra
-  (local JSON files) — good for getting started.
+- A vector backend (pick one in section 3). The default is **LanceDB** — embedded and
+  in-process (no separate service, no Python), installed automatically with the core deps.
 - An embedding source (section 4): OpenRouter API key, a local embedding server,
   or the fully in-process option.
 
@@ -38,10 +38,10 @@ Install dependencies (as the service user):
 
 ```bash
 cd /opt/noodlr-memory
-sudo -u noodlr npm install --omit=dev            # core deps
+sudo -u noodlr npm install --omit=dev            # core deps (includes embedded LanceDB)
 # optional backends / features, install only what you use:
-sudo -u noodlr npm install chromadb              # if VECTOR_BACKEND=chroma
 sudo -u noodlr npm install @qdrant/js-client-rest # if VECTOR_BACKEND=qdrant
+sudo -u noodlr npm install chromadb              # if VECTOR_BACKEND=chroma
 sudo -u noodlr npm install @huggingface/transformers # if EMBED_PROVIDER=transformers
 sudo -u noodlr npm install pdf-parse             # if you import PDFs
 ```
@@ -60,11 +60,13 @@ sudo -u noodlr $EDITOR /opt/noodlr-memory/.env
 
 Key settings:
 
-- `FAMILIAR_MEMORY_HOST` — keep `127.0.0.1` unless exposing on a trusted LAN.
-- `FAMILIAR_MEMORY_PORT` — default `3010`.
-- `FAMILIAR_MEMORY_SECRET` — set a long random secret; the module must send the
+- `NOODLR_MEMORY_HOST` — keep `127.0.0.1` unless exposing on a trusted LAN.
+- `NOODLR_MEMORY_PORT` — default `3010`.
+- `NOODLR_MEMORY_SECRET` — set a long random secret; the module must send the
   same value. Generate one: `openssl rand -hex 32`.
-- `VECTOR_BACKEND` — `vectra` | `chroma` | `qdrant` (section 3).
+- `VECTOR_BACKEND` — `lancedb` | `vectra` | `qdrant` | `chroma` (section 3).
+- `LANCEDB_URI` — LanceDB data dir (default `<DATA_DIR>/lancedb`; set to an existing
+  store such as `/opt/lancedb_data` if you have one).
 - `EMBED_PROVIDER` / `EMBED_MODEL` / `EMBED_BASE_URL` / `EMBED_API_KEY` (section 4).
 
 > The embedding config can also be supplied per-request from the module's RAG
@@ -74,13 +76,29 @@ Key settings:
 
 ## 3. Vector backend
 
-### Option A — Vectra (no external service)
+### Option A — LanceDB (embedded, recommended)
+
+Nothing extra to run: LanceDB is an in-process columnar vector store (no server, no
+Python). The `@lancedb/lancedb` native module ships with the core deps. Set
+`VECTOR_BACKEND=lancedb` and `LANCEDB_URI` (default `<DATA_DIR>/lancedb`). Data is written
+as Lance files in that directory — back it up like any data folder.
+
+```bash
+sudo mkdir -p /opt/lancedb_data && sudo chown noodlr:noodlr /opt/lancedb_data
+# in .env:  VECTOR_BACKEND=lancedb   LANCEDB_URI=/opt/lancedb_data
+```
+
+> Only one process may write a LanceDB directory at a time. If you were experimenting with a
+> separate Python LanceDB/FastAPI server against the same folder, stop it — noodlr-memory now
+> owns that directory.
+
+### Option B — Vectra (no external service)
 
 Nothing to install beyond the service itself. Indexes are JSON files under
-`FAMILIAR_MEMORY_DATA_DIR` (default `/opt/noodlr-memory/data`). Set
-`VECTOR_BACKEND=vectra`. Best for small/medium campaigns and first runs.
+`NOODLR_MEMORY_DATA_DIR` (default `/opt/noodlr-memory/data`). Set
+`VECTOR_BACKEND=vectra`. A tiny fallback for minimal setups.
 
-### Option B — Chroma
+### Option C — Chroma
 
 Run Chroma with Docker (simplest) and point the service at it
 (`VECTOR_BACKEND=chroma`, `CHROMA_URL=http://localhost:8000`):
@@ -118,7 +136,7 @@ sudo mkdir -p /opt/chroma-data && sudo chown noodlr:noodlr /opt/chroma-data
 sudo systemctl enable --now chroma
 ```
 
-### Option C — Qdrant
+### Option D — Qdrant
 
 ```bash
 sudo docker run -d --name qdrant --restart unless-stopped \
@@ -231,7 +249,7 @@ Health check:
 
 ```bash
 curl -s http://127.0.0.1:3010/v1/health -H "x-noodlr-secret: $YOUR_SECRET"
-# {"ok":true,"backend":"vectra"}
+# {"ok":true,"backend":"lancedb"}
 ```
 
 ---
@@ -243,7 +261,7 @@ If Foundry runs elsewhere:
 
 - Prefer an SSH tunnel or a reverse proxy (nginx/Caddy) terminating TLS, rather
   than binding `0.0.0.0` directly.
-- Always set a strong `FAMILIAR_MEMORY_SECRET`.
+- Always set a strong `NOODLR_MEMORY_SECRET`.
 - Restrict with a firewall (`ufw allow from <foundry-ip> to any port 3010`).
 
 Example Caddy block (TLS + forward):
@@ -273,13 +291,14 @@ In Foundry: Noodlr settings → **Memory (RAG)** tab:
 
 - Update: replace the code, `sudo -u noodlr npm install --omit=dev`, `sudo systemctl restart noodlr-memory`.
 - Reset one silo: use the per-collection **Reset** button in the RAG tab (or `POST /v1/purge`).
-- Back up: the `data/` dir (Vectra), the Chroma/Qdrant volume as applicable.
+- Back up: the `LANCEDB_URI` dir (LanceDB), the `data/` dir (Vectra), or the Chroma/Qdrant volume as applicable.
 - Logs: `journalctl -u noodlr-memory`.
 
 ## 9. Troubleshooting
 
 - **Test fails / connection refused** — service not running or wrong URL/port; check `systemctl status` and `journalctl`.
 - **401 unauthorized** — secret mismatch between `.env` and the module.
-- **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=vectra` for zero-setup.
+- **LanceDB write/lock error** — another process (e.g. a leftover Python LanceDB server) is writing the same `LANCEDB_URI`; stop it so noodlr-memory is the sole writer.
+- **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.

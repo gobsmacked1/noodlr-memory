@@ -36,14 +36,19 @@ function str(name, fallback = "") {
   return v === undefined || v === "" ? fallback : v;
 }
 
+const DATA_DIR = resolve(ROOT, str("NOODLR_MEMORY_DATA_DIR", "./data"));
+
 export const config = {
   root: ROOT,
   host: str("NOODLR_MEMORY_HOST", "127.0.0.1"),
   port: num("NOODLR_MEMORY_PORT", 3010),
   secret: str("NOODLR_MEMORY_SECRET", ""),
   maxBodyMb: num("NOODLR_MEMORY_MAX_BODY_MB", 32),
-  backend: str("VECTOR_BACKEND", "chroma").toLowerCase(),
-  dataDir: resolve(ROOT, str("NOODLR_MEMORY_DATA_DIR", "./data")),
+  backend: str("VECTOR_BACKEND", "lancedb").toLowerCase(),
+  dataDir: DATA_DIR,
+  // Embedded LanceDB data directory. Defaults under the service data dir; point it at an
+  // existing store (e.g. /opt/lancedb_data) with LANCEDB_URI.
+  lancedbUri: str("LANCEDB_URI", resolve(DATA_DIR, "lancedb")),
   chromaUrl: str("CHROMA_URL", "http://localhost:8000"),
   chromaAuthToken: str("CHROMA_AUTH_TOKEN", ""),
   qdrantUrl: str("QDRANT_URL", "http://localhost:6333"),
