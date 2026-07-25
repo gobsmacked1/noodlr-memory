@@ -102,18 +102,20 @@ export class LanceStore {
       .toArray()
       .catch(async (err) => {
         const dim = Array.isArray(vector) ? vector.length : "?";
-        // Dump the table's actual `vector` field type. A legacy table whose vector column is a
-        // plain List (variable length) instead of FixedSizeList<Float32,N> can't be searched even
-        // though rows add fine — the definitive "purge + re-ingest this silo" signal.
-        let extra = "";
+        // Front-load the two dimensions so the comparison survives journalctl line-chopping.
+        // query dim != table dim => the silo was written with a different embedding model (purge +
+        // re-ingest). Equal dims but still failing => bad vector values (handled by embed validation).
+        let tableDim = "?";
         try {
           const schema = await table.schema();
           const vf = (schema?.fields ?? []).find((f) => f.name === "vector");
-          extra = vf ? ` [table 'vector' type: ${vf.type}]` : " [no 'vector' field!]";
+          tableDim = vf?.type?.listSize ?? vf?.type?.toString?.() ?? "?";
         } catch {
           /* schema read is best-effort */
         }
-        log.warn(`lancedb vectorSearch failed on "${name}" (query dim=${dim})${extra}: ${err?.message ?? err}`);
+        log.warn(
+          `lancedb vectorSearch failed on "${name}": query dim=${dim} vs table dim=${tableDim} :: ${err?.message ?? err}`,
+        );
         return [];
       });
     return results

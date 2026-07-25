@@ -128,6 +128,41 @@ async function embedBatchHedged(endpoint, cfg, batch) {
   }
 }
 
+// Reject vectors a vector store can't search: non-arrays, non-finite values (NaN/Inf), or a
+// dimension that varies between items. A provider that returns these makes vectorSearch throw a
+// cryptic "Failed to execute query" AFTER the bad rows are already stored — so we fail loud and
+// early with the actual reason instead. (base64-encoded embeddings, for example, arrive as strings
+// and are caught here.)
+function assertValidVectors(vectors, model) {
+  let dim = null;
+  for (let i = 0; i < vectors.length; i++) {
+    const v = vectors[i];
+    if (!Array.isArray(v)) {
+      throw new HttpError(
+        502,
+        `embedding provider returned a non-array vector for item ${i} (got ${typeof v}). Model "${model}" may be returning base64/objects instead of float arrays.`,
+      );
+    }
+    if (dim === null) dim = v.length;
+    else if (v.length !== dim) {
+      throw new HttpError(
+        502,
+        `embedding dimension varies within one request (${dim} vs ${v.length} at item ${i}). The provider/model "${model}" is returning inconsistent vectors — pin a single provider.`,
+      );
+    }
+    for (let j = 0; j < v.length; j++) {
+      const x = v[j];
+      if (typeof x !== "number" || !Number.isFinite(x)) {
+        throw new HttpError(
+          502,
+          `embedding for item ${i} contains a non-finite value (${x}) at index ${j}. Model "${model}" returned an unusable vector.`,
+        );
+      }
+    }
+  }
+  return dim;
+}
+
 /**
  * Embed an array of texts. Batches by cfg.batchSize; on a batch failure, retries
  * that batch one item at a time so a single bad/stuck item can't sink the run.
@@ -158,5 +193,6 @@ export async function embedTexts(texts, reqEmbed) {
       }
     }
   }
+  assertValidVectors(out, cfg.model || cfg.provider);
   return out;
 }
