@@ -148,7 +148,10 @@ export function createRouter(store) {
       // In hybrid mode over-fetch a wider candidate pool (so BM25 can surface
       // keyword matches the dense layer ranked low) and gather inclusively; the
       // re-ranker + topK do the final cut. Dense-only mode keeps the hard floor.
-      const candidateK = hybrid ? clampInt(topK * 8, topK, 100) : topK;
+      // clampInt(value, fallback, min, max): over-fetch topK*8 candidates, floor topK, cap 100.
+      // (Bug fix: the max arg was previously omitted, so this evaluated to NaN -> vectorSearch
+      // limit(NaN) -> "k must be positive" -> every hybrid query silently returned zero hits.)
+      const candidateK = hybrid ? clampInt(topK * 8, topK, topK, 100) : topK;
       const gatherThreshold = hybrid ? 0 : threshold;
 
       // Embed all sub-queries in one batch, then gather a candidate list per

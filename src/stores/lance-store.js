@@ -92,13 +92,16 @@ export class LanceStore {
     const name = this._name(collection);
     const table = await this._open(name);
     if (!table) return [];
+    // Guard: LanceDB rejects a non-positive/NaN limit ("k must be positive"). Never let a bad
+    // caller-supplied k silently turn a healthy search into zero hits.
+    const k = Math.max(1, Math.trunc(Number(topK)) || 1);
     // Surface (don't swallow) the real vectorSearch failure. A common cause is a query/table
     // embedding-dimension mismatch (e.g. the silo was first written with a different embed model),
     // which returns zero hits — logging the dim + message makes that diagnosable instead of silent.
     const results = await table
       .vectorSearch(vector)
       .distanceType("cosine")
-      .limit(topK)
+      .limit(k)
       .toArray()
       .catch(async (err) => {
         const dim = Array.isArray(vector) ? vector.length : "?";

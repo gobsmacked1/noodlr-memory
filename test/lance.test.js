@@ -46,6 +46,13 @@ test("lancedb + mock embeddings round-trip", async (t) => {
     await store.upsert("lore", items.map((c, i) => ({ ...c, vector: vectors[i] })));
     assert.equal((await store.listHashes("lore")).length, items.length, "re-upsert is idempotent");
 
+    // Regression: a bad topK (NaN/0/negative) must not crash search ("k must be positive") nor
+    // silently return zero hits. This is the failure the query route hit via a mis-argued clampInt.
+    for (const badK of [NaN, 0, -3]) {
+      const guarded = await store.query("lore", qvec, badK, 0);
+      assert.ok(guarded.length > 0, `store.query survives topK=${badK}`);
+    }
+
     await store.purge("lore");
     assert.equal((await store.listHashes("lore")).length, 0, "purge empties the collection");
   } finally {
