@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { COLLECTION_IDS } from "../collections.js";
 import { normalizeCosineFromL2Distance } from "./base.js";
+import { log } from "../logger.js";
 
 // Embedded LanceDB backend (via the official @lancedb/lancedb Node SDK). No external
 // service and no Python: LanceDB is an in-process columnar vector store that writes Lance
@@ -88,14 +89,22 @@ export class LanceStore {
   }
 
   async query(collection, vector, topK, threshold) {
-    const table = await this._open(this._name(collection));
+    const name = this._name(collection);
+    const table = await this._open(name);
     if (!table) return [];
+    // Surface (don't swallow) the real vectorSearch failure. A common cause is a query/table
+    // embedding-dimension mismatch (e.g. the silo was first written with a different embed model),
+    // which returns zero hits — logging the dim + message makes that diagnosable instead of silent.
     const results = await table
       .vectorSearch(vector)
       .distanceType("cosine")
       .limit(topK)
       .toArray()
-      .catch(() => []);
+      .catch((err) => {
+        const dim = Array.isArray(vector) ? vector.length : "?";
+        log.warn(`lancedb vectorSearch failed on "${name}" (query dim=${dim}): ${err?.message ?? err}`);
+        return [];
+      });
     return results
       .map((r) => {
         const score = normalizeCosineFromL2Distance(r._distance);
@@ -124,7 +133,10 @@ export class LanceStore {
       .query()
       .select(["hash"])
       .toArray()
-      .catch(() => []);
+      .catch((err) => {
+        log.warn(`lancedb listHashes failed on "${this._name(collection)}": ${err?.message ?? err}`);
+        return [];
+      });
     return rows.map((r) => Number(r.hash)).filter((n) => Number.isFinite(n));
   }
 

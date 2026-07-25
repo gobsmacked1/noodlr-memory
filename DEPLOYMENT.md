@@ -365,3 +365,38 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
+- **self-test / query returns 0 hits even though ingest succeeded** — the write landed but the
+  dense search returned nothing. This is almost always an **embedding-dimension mismatch on a
+  stale silo**: the table was first written with one embedding model (dimension), and you're now
+  querying with a different model. As of the current build, `vectorSearch` failures are logged
+  (`journalctl -u noodlr-memory` → `lancedb vectorSearch failed ... query dim=N`). Fix: purge and
+  re-ingest that silo with a single, consistent embedding model.
+
+### Diagnostic / seed tool (`scripts/seed.mjs`)
+
+A standalone client that talks to the running service over HTTP exactly like the Foundry module
+(same `/v1` routes, secret header, and per-request `embed` config). Use it to isolate whether a
+problem is in the service or in the module. It never needs Foundry.
+
+```bash
+# Point it at the service; pass your real embed config so it mirrors the module.
+export NOODLR_MEMORY_URL=https://your.host/memory      # or http://127.0.0.1:3010
+export NOODLR_MEMORY_SECRET=<write-secret>
+export EMBED_PROVIDER=openrouter EMBED_MODEL=<embed-slug> EMBED_API_KEY=<key>
+export SILO=docs
+
+node scripts/seed.mjs health         # ping
+node scripts/seed.mjs collections    # per-silo row counts (proves writes persist)
+node scripts/seed.mjs seed           # ingest 4 sample docs into $SILO
+node scripts/seed.mjs query "who hid the silver dagger?"
+node scripts/seed.mjs selftest       # ingest a unique marker, then read it back (with detail)
+node scripts/seed.mjs purge          # wipe $SILO afterward to avoid contamination
+```
+
+Interpreting `selftest`: if it **succeeds here but fails in Foundry's Diagnostics**, the issue is
+module-side. If it **fails here too**, it's the service/store — read the failure line (0 hits ⇒
+check the service log for the `vectorSearch failed` reason, usually a dim mismatch ⇒ `purge`).
+
+Silos are **created automatically** on first ingest (one LanceDB table per collection); there is
+no manual initialization step. A silo simply won't appear in `collections` until something is
+written to it.
