@@ -166,6 +166,11 @@ async function cmdPurge() {
   console.log(`Purged "${SILO}":`, res);
 }
 
+async function cmdPurgeAll() {
+  const res = await api("/purge-all", {});
+  console.log("Purged ALL silos:", res);
+}
+
 async function siloCount() {
   const info = await api("/collections").catch(() => ({ stats: {} }));
   const s = (info.stats ?? {})[SILO];
@@ -180,6 +185,7 @@ const commands = {
   query: () => cmdQuery(rest.join(" ")),
   selftest: cmdSelfTest,
   purge: cmdPurge,
+  "purge-all": cmdPurgeAll,
 };
 
 const run = commands[cmd];

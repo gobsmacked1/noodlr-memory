@@ -100,9 +100,20 @@ export class LanceStore {
       .distanceType("cosine")
       .limit(topK)
       .toArray()
-      .catch((err) => {
+      .catch(async (err) => {
         const dim = Array.isArray(vector) ? vector.length : "?";
-        log.warn(`lancedb vectorSearch failed on "${name}" (query dim=${dim}): ${err?.message ?? err}`);
+        // Dump the table's actual `vector` field type. A legacy table whose vector column is a
+        // plain List (variable length) instead of FixedSizeList<Float32,N> can't be searched even
+        // though rows add fine — the definitive "purge + re-ingest this silo" signal.
+        let extra = "";
+        try {
+          const schema = await table.schema();
+          const vf = (schema?.fields ?? []).find((f) => f.name === "vector");
+          extra = vf ? ` [table 'vector' type: ${vf.type}]` : " [no 'vector' field!]";
+        } catch {
+          /* schema read is best-effort */
+        }
+        log.warn(`lancedb vectorSearch failed on "${name}" (query dim=${dim})${extra}: ${err?.message ?? err}`);
         return [];
       });
     return results

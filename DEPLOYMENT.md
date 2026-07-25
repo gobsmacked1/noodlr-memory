@@ -366,11 +366,17 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
 - **self-test / query returns 0 hits even though ingest succeeded** — the write landed but the
-  dense search returned nothing. This is almost always an **embedding-dimension mismatch on a
-  stale silo**: the table was first written with one embedding model (dimension), and you're now
-  querying with a different model. As of the current build, `vectorSearch` failures are logged
-  (`journalctl -u noodlr-memory` → `lancedb vectorSearch failed ... query dim=N`). Fix: purge and
-  re-ingest that silo with a single, consistent embedding model.
+  dense search returned nothing (`add` works, `vectorSearch` throws). Two known causes, both fixed
+  by **purging the affected silo and re-ingesting**:
+  1. **Legacy table** created by an older build/SDK whose `vector` column is a plain variable-length
+     `List` instead of a searchable `FixedSizeList<Float32,N>`. Fresh tables created by the current
+     build are correct, so purge lets the silo be recreated properly.
+  2. **Embedding-dimension mismatch** — the silo was first written with a different embedding model.
+  As of the current build the failure is logged with the table's actual vector type, e.g.
+  `journalctl -u noodlr-memory -o cat -n 10` → `lancedb vectorSearch failed on "noodlr_docs"
+  (query dim=1024) [table 'vector' type: List<Float32>]: ...`. `List<...>` ⇒ cause #1; a dim
+  number that differs from the model's output ⇒ cause #2. Purge the silo (`node scripts/seed.mjs
+  purge`, or `purge-all` to reset every silo) and re-ingest with one consistent embedding model.
 
 ### Diagnostic / seed tool (`scripts/seed.mjs`)
 
