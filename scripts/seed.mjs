@@ -37,7 +37,7 @@
 // now logged, e.g. an embedding-dimension mismatch on a stale silo -> run `purge` and re-seed).
 // -----------------------------------------------------------------------------------------------
 
-import { Agent } from "undici";
+import http from "node:http";
 
 const SOCKET = process.env.NOODLR_MEMORY_SOCKET || "";
 // In socket mode host/port are irrelevant; the Host header just needs to be a valid authority.
@@ -47,8 +47,22 @@ const URL_BASE = (
 const SECRET = process.env.NOODLR_MEMORY_SECRET || "";
 const SILO = process.env.SILO || "docs";
 
-// When a socket is configured, route fetch through an undici dispatcher bound to that socket.
-const DISPATCHER = SOCKET ? new Agent({ connect: { socketPath: SOCKET } }) : undefined;
+// Unix-socket request via node:http (which supports `socketPath` natively). We deliberately DON'T
+// use undici's Agent-as-dispatcher: `undici` isn't a dependency here, so importing it would grab a
+// transitive/mismatched instance that Node's global fetch rejects ("fetch failed").
+function socketRequest(path, method, headers, payload) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: SOCKET, path, method, headers }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (text += c));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
 
 // Build the per-request embed override ONLY from provided vars. If none are set, the object is
 // empty and the server falls back to its own .env embedding config (resolveEmbedConfig).
@@ -64,21 +78,26 @@ function embedConfig() {
 async function api(path, body) {
   const headers = { "Content-Type": "application/json" };
   if (SECRET) headers["x-noodlr-secret"] = SECRET;
-  const res = await fetch(`${URL_BASE}/v1${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    dispatcher: DISPATCHER,
-  });
-  const text = await res.text();
+  const method = body === undefined ? "GET" : "POST";
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+
+  let status, text;
+  if (SOCKET) {
+    ({ status, text } = await socketRequest(`/v1${path}`, method, headers, payload));
+  } else {
+    const res = await fetch(`${URL_BASE}/v1${path}`, { method, headers, body: payload });
+    status = res.status;
+    text = await res.text();
+  }
+
   let json;
   try {
     json = text ? JSON.parse(text) : {};
   } catch {
     json = { raw: text };
   }
-  if (!res.ok) {
-    throw new Error(`${path} -> HTTP ${res.status}: ${json.error ?? text.slice(0, 300)}`);
+  if (status < 200 || status >= 300) {
+    throw new Error(`${path} -> HTTP ${status}: ${json.error ?? text.slice(0, 300)}`);
   }
   return json;
 }
