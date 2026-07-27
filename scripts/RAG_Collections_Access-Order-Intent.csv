@@ -1,0 +1,36 @@
+﻿RAG collection,Main (GM) chatbot RAG access rights,Main (GM) chatbot RAG access order,Players-only chatbot RAG access rights,Players-only chatbot RAG access order,UI feature description and example RAG collection intent
+unfiltered_chat,SELECT,33,SELECT,18,"unfiltered native Foundry logs, e.g., combat tracking, player chat, dice rolls, etc."
+system_rules,SELECT,1,SELECT,1,current game system rules
+player_story_arc,SELECT,28,"SELECT, INSERT, UPDATE",13,"campaign story arc of which at least one player has knowledge,"
+player_sheets,SELECT,19,"SELECT, INSERT, UPDATE, DELETE",4,"skills and abilities of which at least one player has knowledge,"
+player_reputations,SELECT,21,"SELECT, INSERT, UPDATE, DELETE",6,"attitudes towards the player of which at least one player has knowledge,"
+player_quests,SELECT,24,"SELECT, INSERT, UPDATE, DELETE",9,"quest progress of which at least one player has accepted,"
+player_puzzle,SELECT,26,"SELECT, INSERT, UPDATE, DELETE",11,"challenge or mystery of which at least one player has knowledge,"
+player_npc_state,SELECT,29,"SELECT, INSERT, UPDATE, DELETE",14,NPC location and status of which at least one player has knowledge
+player_macguffin,SELECT,25,"SELECT, INSERT, UPDATE, DELETE",10,"quest goal of which at least one player has knowledge,"
+player_lore,SELECT,30,"SELECT, INSERT, UPDATE, DELETE",15,"world lore of which at least one player has knowledge,"
+player_locations,SELECT,23,"SELECT, INSERT, UPDATE, DELETE",8,scene location and status of which at least one player has knowledge
+player_inventory,SELECT,20,"SELECT, INSERT, UPDATE, DELETE",5,"items of which at least one player has knowledge,"
+player_history,SELECT,31,"SELECT, INSERT",16,"events that unfolded of which at least one player has knowledge,"
+player_goals,SELECT,27,"SELECT, INSERT, UPDATE, DELETE",12,"personal goals of which at least one player has knowledge,"
+player_factions,SELECT,22,"SELECT, INSERT, UPDATE, DELETE",7,"organizations of which at least one player has knowledge,"
+player_effects,SELECT,18,"SELECT, INSERT, UPDATE, DELETE",3,"boons and banes of which at least one player has knowledge,"
+player_chat,SELECT,17,"SELECT, INSERT",2,text and audio transcription which contain at least one player
+player_calendar,SELECT,32,"SELECT, INSERT, UPDATE, DELETE",17,calendar events of which at least one player has knowledge
+gm_story_arc,"SELECT, INSERT, UPDATE",13,NO ACCESS,N/A,"campaign story arc of which no player has knowledge, e.g., liberate the land from an evil arch made, stop a planar incursion, etc."
+gm_sheets,"SELECT, INSERT, UPDATE, DELETE",4,NO ACCESS,N/A,"skills and abilities of which no player has knowledge, e.g., exhibited innate sorcery for first time, made an unknowing pact with a demon, etc."
+gm_reputations,"SELECT, INSERT, UPDATE, DELETE",6,NO ACCESS,N/A,"attitudes towards the player of which no player has knowledge, e.g., aasimars killed on sight by demons, wood-elves more trusted by beasts, etc."
+gm_quests,"SELECT, INSERT, UPDATE, DELETE",9,NO ACCESS,N/A,"quest progress of which no player has accepted, e.g., 6 of 7 cellar rats slain, missing potion ingredient search, etc."
+gm_puzzle,"SELECT, INSERT, UPDATE, DELETE",11,NO ACCESS,N/A,"challenge or mystery of which no player has knowledge, e.g., townsfolk disappearances, floating lights in the forest, etc."
+gm_npc_state,"SELECT, INSERT, UPDATE, DELETE",14,NO ACCESS,N/A,"NPC location and status of which no player has knowledge, e.g., merchants, slain/living quest-givers, etc."
+gm_macguffin,"SELECT, INSERT, UPDATE, DELETE",10,NO ACCESS,N/A,"quest goal of which no player has knowledge, e.g., Excalibur, the Arkenstone, a horcrux, a lich's phylactery, etc."
+gm_lore,"SELECT, INSERT, UPDATE, DELETE",15,NO ACCESS,N/A,"world lore of which no player has knowledge, e.g., haunted mansion, disease blighted orchard, etc."
+gm_locations,"SELECT, INSERT, UPDATE, DELETE",8,NO ACCESS,N/A,"scene location and status of which no player has knowledge, e.g., traps, secret doors, etc."
+gm_inventory,"SELECT, INSERT, UPDATE, DELETE",5,NO ACCESS,N/A,"items of which no player has knowledge, e.g., learned a new weapon mastery, attuned to a cursed item, etc."
+gm_history,"SELECT, INSERT",16,NO ACCESS,N/A,"events that unfolded of which no player has knowledge, e.g., abducted princesses, murdered hobos, etc."
+gm_goals,"SELECT, INSERT, UPDATE, DELETE",12,NO ACCESS,N/A,"personal goals of which no player has knowledge, e.g., birthright claim to a lost throne, best swordsman in the realm, etc."
+gm_factions,"SELECT, INSERT, UPDATE, DELETE",7,NO ACCESS,N/A,"organizations of which no player has knowledge, e.g., The Harpers, The Zhentarim, The Cobalt Soul, etc."
+gm_effects,"SELECT, INSERT, UPDATE, DELETE",3,NO ACCESS,N/A,"boons and banes of which no player has knowledge, e.g., blessed by Mystra, infected by Lycanthropy, etc."
+gm_chat,"SELECT, INSERT",2,NO ACCESS,N/A,"text and audio transcription which include no player, e.g., encounter planning, plot twists, villain motivations, etc."
+gm_calendar,"SELECT, INSERT, UPDATE, DELETE",17,NO ACCESS,N/A,"calendar events of which no player has knowledge, e.g., holidays, cult ritual ceremonies, etc."
+docs,SELECT,34,SELECT,19,"misc imported documents, e.g., TXT, PDF, CSV, JSON, and YAML,"

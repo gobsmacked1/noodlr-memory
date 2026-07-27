@@ -36,6 +36,7 @@ export const COLLECTIONS = Object.freeze({
   player_inventory:	"items of which at least one player has knowledge",
   gm_inventory:	"items of which no player has knowledge, e.g., learned a new weapon mastery, attuned to a cursed item, etc",
   docs:	"misc imported documents, e.g., TXT, PDF, CSV, JSON, and YAML",
+  unfiltered_chat:	"unfiltered native Foundry logs, e.g., combat tracking, player chat, dice rolls, etc",
 });
 
 export const COLLECTION_IDS = Object.freeze(Object.keys(COLLECTIONS));
