@@ -3,7 +3,7 @@
 Companion vector/RAG memory service for the **Noodlr** Foundry VTT module.
 
 It provides embeddings + a real vector database, split into per-purpose
-collections, so the AI co-pilot can recall your campaign from a proper
+collections, so Noodlr can recall your campaign from a proper
 retrieval index instead of browser-local storage. Inspired by SillyTavern's
 Vector Storage (Data Bank) and VectFox.
 
