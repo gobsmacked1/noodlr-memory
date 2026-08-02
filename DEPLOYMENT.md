@@ -66,7 +66,10 @@ sudo -u noodlr $EDITOR /opt/noodlr-memory/.env
 Key settings:
 
 - `NOODLR_MEMORY_HOST` — keep `127.0.0.1` unless exposing on a trusted LAN.
-- `NOODLR_MEMORY_PORT` — default `3010`.
+- `NOODLR_MEMORY_PORT` — default `3010`. Set to `0` to run with no TCP port at all
+  (only sensible together with `NOODLR_MEMORY_SOCKET`).
+- `NOODLR_MEMORY_SOCKET` — optional Unix socket, listened on **in addition** to the TCP
+  port, for a reverse proxy on this machine. Ignored on Windows.
 - `NOODLR_MEMORY_SECRET` — set a long random secret; the module must send the
   same value. Generate one: `openssl rand -hex 32`.
 - `VECTOR_BACKEND` — `lancedb` | `vectra` | `qdrant` | `chroma` (section 3).
@@ -276,11 +279,15 @@ never on the Foundry host — so the service must be reachable from those client
 
 ### Option A — Reverse proxy behind nginx via a Unix socket (recommended)
 
-No TCP port is opened at all: the service listens on a Unix socket and nginx (already
-terminating TLS for Foundry) proxies a path such as `/memory/` to it. This adds TLS, a single
-public origin reachable from anywhere, and a protection layer in front of the service.
+The service listens on a Unix socket and nginx (already terminating TLS for Foundry) proxies a
+path such as `/memory/` to it. This adds TLS, a single public origin reachable from anywhere, and
+a protection layer in front of the service.
 
-1. Configure the socket in `.env` (HOST/PORT are then ignored):
+The socket is listened on **alongside** the TCP port, not instead of it — the default port stays
+on `127.0.0.1`, where only this machine can reach it, which is convenient for `curl` and seed
+scripts. Add `NOODLR_MEMORY_PORT=0` if you want the socket to be the only way in.
+
+1. Configure the socket in `.env`:
 
    ```
    NOODLR_MEMORY_SOCKET=/run/noodlr-memory/noodlr-memory.sock
@@ -309,9 +316,10 @@ public origin reachable from anywhere, and a protection layer in front of the se
    }
    ```
 
-4. In the module's **Memory & Knowledge** window set **Service URL** to
-   `https://endless.secretdoor.app/memory` (no trailing slash — the client appends `/v1/...`).
-   Verify from anywhere:
+4. In the module's **Memory Configuration** window set **How to reach the memory service** to
+   *Behind the Foundry server* and the path to `/memory`. The module resolves it against Foundry's
+   own origin, so the request is same-origin and inherits your TLS. (The older *Direct URL* option
+   still works: `https://endless.secretdoor.app/memory`, no trailing slash.) Verify from anywhere:
 
    ```bash
    curl -s https://endless.secretdoor.app/memory/v1/health -H "x-noodlr-secret: $SECRET"
@@ -326,8 +334,9 @@ public origin reachable from anywhere, and a protection layer in front of the se
 
 ### Option B — Reverse proxy over a local TCP port
 
-Same as A but the service keeps its default TCP bind and nginx targets it:
-`proxy_pass http://127.0.0.1:3010/;`. Simpler if you don't want a socket; still no public TCP.
+Same as A but nginx targets the TCP listener instead of the socket:
+`proxy_pass http://127.0.0.1:3010/;`. Simpler if you don't want a socket (and the only option on
+Windows); still no public TCP.
 
 ### Option C — Direct LAN bind (trusted LAN only)
 

@@ -52,8 +52,10 @@ npm start
 For a production Linux install (systemd units, Chroma/Qdrant setup, and local
 embedding via Ollama or in-process Transformers.js), see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-Point the Noodlr module's RAG tab at `http://127.0.0.1:3010` and use the
-same secret.
+Point the Noodlr module's **Memory Configuration** window at `http://127.0.0.1:3010` and use the
+same secret. That address only works when Foundry, this service, and the browser are all on the
+one machine — for anything else, put the service behind the web server that already serves Foundry
+and give the module the proxied path instead (see [DEPLOYMENT.md](DEPLOYMENT.md) §6).
 
 Zero-setup first run (no external DB):
 

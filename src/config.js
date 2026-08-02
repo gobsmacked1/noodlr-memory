@@ -41,10 +41,14 @@ const DATA_DIR = resolve(ROOT, str("NOODLR_MEMORY_DATA_DIR", "./data"));
 export const config = {
   root: ROOT,
   host: str("NOODLR_MEMORY_HOST", "127.0.0.1"),
+  // Set to 0 to disable the TCP listener entirely (socket-only, for a host that should expose no
+  // network port at all). Any other value binds host:port.
   port: num("NOODLR_MEMORY_PORT", 3010),
-  // Optional Unix domain socket. When set, the service listens ONLY on this socket (host/port
-  // are ignored) — the intended mode behind a reverse proxy (nginx) so nothing binds a TCP
-  // port. socketMode is applied via chmod so the proxy user (e.g. www-data) can connect.
+  // Optional Unix domain socket, listened on IN ADDITION to host:port — a socket is the tidy way
+  // for a reverse proxy on the same machine to reach the service, but assuming that is the only
+  // way anyone wants to reach it presumes a topology (Foundry and this service co-located on
+  // Linux) that plenty of deployments don't have. socketMode is applied via chmod so the proxy
+  // user (e.g. www-data) can connect. Not supported on Windows.
   socketPath: str("NOODLR_MEMORY_SOCKET", ""),
   socketMode: str("NOODLR_MEMORY_SOCKET_MODE", "660"),
   secret: str("NOODLR_MEMORY_SECRET", ""),
