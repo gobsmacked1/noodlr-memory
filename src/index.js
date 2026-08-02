@@ -77,13 +77,39 @@ function installSocketCleanup() {
   process.on("SIGTERM", cleanup);
 }
 
-async function main() {
+function isLoopbackHost(host) {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * Say how exposed this process actually is, once the listeners are up and the answer is known.
+ *
+ * A bind address is easy to widen for an afternoon's testing and easy to forget afterwards, and the
+ * write endpoints include purge. So the warning is scaled to the exposure rather than being the same
+ * line every time: reachable-from-the-network is worth a warning even with a secret set, and
+ * reachable-with-no-secret is an error however quietly it may be running.
+ */
+function warnAboutExposure(tcpBound) {
+  const networkFacing = tcpBound && !isLoopbackHost(config.host);
+  if (networkFacing && !config.secret) {
+    log.error(
+      `Listening on ${config.host}:${config.port} with NOODLR_MEMORY_SECRET empty - anyone who can reach this port can read, write, and PURGE your memory. Set a secret, or bind NOODLR_MEMORY_HOST to 127.0.0.1.`,
+    );
+    return;
+  }
+  if (networkFacing) {
+    log.warn(
+      `Listening on ${config.host}:${config.port} - reachable from other machines over plain HTTP, with the shared secret as the only guard. Intentional? If a reverse proxy fronts this service, bind NOODLR_MEMORY_HOST to 127.0.0.1 instead.`,
+    );
+  }
   if (!config.secret) {
     log.warn(
       "NOODLR_MEMORY_SECRET is not set - the API is unauthenticated. Set it in .env for anything beyond isolated local testing.",
     );
   }
+}
 
+async function main() {
   let store;
   try {
     store = await createStore(config);
@@ -100,7 +126,8 @@ async function main() {
   // has to come over the network (a Foundry host elsewhere, a Windows deployment, curl from your
   // desk). NOODLR_MEMORY_PORT=0 opts out of TCP for hosts that must expose no network port.
   const listeners = [];
-  if (config.port > 0 && (await listenOnTcp(app))) {
+  const tcpBound = config.port > 0 && (await listenOnTcp(app));
+  if (tcpBound) {
     listeners.push(`http://${config.host}:${config.port}`);
   }
   if (config.socketPath && (await listenOnSocket(app))) {
@@ -115,6 +142,7 @@ async function main() {
   log.info(
     `noodlr-memory listening on ${listeners.join(" and ")}  (backend=${store.name}, embed=${embedInfo()})`,
   );
+  warnAboutExposure(tcpBound);
 }
 
 main();
