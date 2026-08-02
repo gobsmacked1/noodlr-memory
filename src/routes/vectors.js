@@ -78,7 +78,14 @@ export function createRouter(store) {
       }
       if (!text.trim()) throw new HttpError(400, "no extractable text");
 
-      const doc = { text, metadata: { sourceName: filename, sourceType: "upload" } };
+      // Optional caller-supplied importance: the re-ranker treats a missing value as zero, so an
+      // uploaded rulebook would otherwise rank below any chat capture that does carry one.
+      const importance = Number(req.body.importance);
+      const metadata = { sourceName: filename, sourceType: "upload" };
+      if (Number.isFinite(importance)) {
+        metadata.importance = Math.max(0, Math.min(10, importance));
+      }
+      const doc = { text, metadata };
       const chunks = chunkDocument(doc, req.body.chunk ?? {});
       if (!chunks.length) return res.json({ inserted: 0, chunks: 0 });
       const vectors = await embedTexts(chunks.map((c) => c.text), req.body.embed);
