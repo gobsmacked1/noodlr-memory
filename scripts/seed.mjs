@@ -9,8 +9,9 @@
 // CONFIG (environment variables; every embed var is optional — omit them to use the server's .env):
 //   NOODLR_MEMORY_URL     base URL, no trailing /v1   (default http://127.0.0.1:3010)
 //                         behind nginx use e.g.        https://your.host/memory
-//   NOODLR_MEMORY_SOCKET  connect over a unix domain socket instead of TCP (socket-only mode).
-//                         e.g. /run/noodlr-memory/noodlr-memory.sock — runs the script on the box
+//   NOODLR_MEMORY_SOCKET  connect over a unix domain socket instead of TCP. Note this is the
+//                         SCRIPT's choice of transport: the service listens on both. e.g.
+//                         /run/noodlr-memory/noodlr-memory.sock — runs the script on the box
 //                         against the same socket the reverse proxy uses, bypassing nginx.
 //   NOODLR_MEMORY_SECRET  the write (GM) secret sent as x-noodlr-secret
 //   EMBED_PROVIDER        openrouter | custom | transformers | mock
