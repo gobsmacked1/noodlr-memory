@@ -374,6 +374,18 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
+- **`embedding provider 429` during a bulk ingest** — the API key is over its provider's
+  requests-per-minute limit. Since v1.1.1 a batch is retried with backoff (honouring `Retry-After`),
+  the retry is shared across everything in flight, and hedging stands down for a minute so it stops
+  doubling the request rate at the worst moment. If it still fails, in order of effect:
+  1. **Raise `EMBED_BATCH_SIZE`** (16 → 64). A rate limit counts requests, not texts, so this is a
+     straight 4× cut in calls for the same work. Try this first.
+  2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests (1200 ≈ 50/min) if the limit is low enough
+     that backoff is waiting more than working.
+  3. **Ingest locally.** `EMBED_PROVIDER=transformers` embeds in-process with no network, no key and
+     no limit — a good fit for a one-off bulk load of rulebooks. It changes the vector space, so
+     **every collection must then use it**: switch only right after a full reset, never partway
+     through a corpus, or old and new rows become unsearchable against each other.
 - **self-test / query returns 0 hits even though ingest succeeded** — the write landed but the
   dense search returned nothing (`add` works, `vectorSearch` throws). Two known causes, both fixed
   by **purging the affected silo and re-ingesting**:

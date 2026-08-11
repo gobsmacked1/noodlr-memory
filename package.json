@@ -1,6 +1,6 @@
 {
   "name": "noodlr-memory",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "description": "Companion vector/RAG memory service for the Noodlr Foundry VTT module. Provides embeddings + a pluggable vector store (embedded LanceDB default; also Qdrant, Chroma, or file-based Vectra) split into per-purpose collections.",

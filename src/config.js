@@ -70,5 +70,10 @@ export const config = {
     batchSize: num("EMBED_BATCH_SIZE", 16),
     hedgeMs: num("EMBED_HEDGE_MS", 15000),
     timeoutMs: num("EMBED_TIMEOUT_MS", 60000),
+    maxRetries: num("EMBED_MAX_RETRIES", 5),
+    // Minimum gap between embedding requests, in ms. 0 = as fast as they complete. Raise it when a
+    // provider's limit is low enough that the retry gate spends more time waiting than working:
+    // 1200 is roughly 50 requests a minute.
+    minIntervalMs: num("EMBED_MIN_INTERVAL_MS", 0),
   },
 };
