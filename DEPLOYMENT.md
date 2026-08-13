@@ -374,22 +374,39 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
-- **`embedding provider 429` during a bulk ingest** — the API key is over its provider's
-  requests-per-minute limit. Since v1.2.0 the service treats a rate limit as something to be *waited
-  out* rather than retried through: the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (20s, sized for a
-  per-minute window), escalates, honours `Retry-After`, and keeps going for up to
-  `EMBED_RATE_LIMIT_BUDGET_MS` (10 min) — a total time budget, not a count of attempts, because five
-  retries of exponential backoff from 2s all land inside the same window and then give up. The pause
-  is process-wide, hedging stands down for a minute, and each 429 leaves behind an extra
-  `EMBED_PACE_STEP_MS` gap between every later request (up to `EMBED_PACE_MAX_MS`, decaying after ten
-  quiet minutes) so the run does not sprint straight back into the next window. A rate limit is
-  reported to the caller as HTTP **429**, so the module can say "waiting" rather than "failed".
+- **`embedding provider 429` during a bulk ingest** — the key is over a requests-per-minute limit.
+  The service waits a rate limit *out* rather than retrying through it: the wait starts at
+  `EMBED_RATE_LIMIT_WAIT_MS` (20s, sized for a per-minute window), escalates, and honours
+  `Retry-After` or `X-RateLimit-Reset` when the provider sends one. The pause is process-wide, hedging
+  stands down for a minute, and each 429 leaves an extra `EMBED_PACE_STEP_MS` gap between every later
+  request (up to `EMBED_PACE_MAX_MS`, decaying after five quiet minutes) so the run does not sprint
+  back into the next window.
+  **Read the log line before changing anything — it names WHICH limiter refused, and the two have
+  opposite remedies:**
+  - `[account limit: ...]` is OpenRouter's own cap on the key, and it carries the numbers from the
+    `X-RateLimit-*` headers. Buying credits raises a free-model daily cap, or move off a `:free`
+    model variant.
+  - `[upstream limit]` is the model's own provider refusing, relayed verbatim by OpenRouter behind an
+    `HTTP 429:` prefix. **Credits cannot change this one** — it is that model's capacity, not your
+    balance — so the levers are a slower rate, fewer requests, or a different model.
+  Since v1.2.1 the service holds one HTTP request open for at most `EMBED_RATE_LIMIT_BUDGET_MS`
+  (**45s**) before handing the 429 back and letting the caller wait. That is deliberate and replaces a
+  10-minute hold: the caller is the side with a progress bar, a cancel button and a resume index, so a
+  service that disappears for ten minutes mid-request makes a working ingest look hung and risks being
+  cut off by a reverse proxy first (keep this value under your `proxy_read_timeout`). The pacing
+  survives the hand-back, so the caller's retry does not arrive at full speed.
   If it still fails, in order of effect:
   1. **Raise `EMBED_BATCH_SIZE`** (32 → 64). A rate limit counts requests, not texts, so this is a
      straight halving of calls for the same work. `EMBED_MAX_CHARS_PER_REQUEST` splits any batch that
      would get too long, so raising it cannot produce an oversized body. Try this first.
-  2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min) if the limit is
-     known and low; the adaptive pacing above only learns after the first refusal.
+  2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min, 6000 ≈ 10/min);
+     the adaptive pacing above only learns after the first refusal, and its ceiling
+     (`EMBED_PACE_MAX_MS`, 30s) is a runaway guard rather than a target. A whole rulebook corpus is
+     only one to two thousand requests at `EMBED_BATCH_SIZE=64`, so even 10/min finishes overnight —
+     for a one-off bulk load, pacing deliberately is far cheaper in wall-clock terms than being
+     refused, since a refusal costs the wait *and* the request.
+     Also set **`EMBED_HEDGE_MS=0`** for a bulk run: hedging is a latency trick for interactive
+     queries and every duplicate it fires is another request against the same limit.
   3. **Ingest locally.** `EMBED_PROVIDER=transformers` embeds in-process with no network, no key and
      no limit — a good fit for a one-off bulk load of rulebooks. It changes the vector space, so
      **every collection must then use it**: switch only right after a full reset, never partway

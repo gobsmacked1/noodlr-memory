@@ -10,7 +10,9 @@ const MOCK_DIM = 256;
 // leave the service, OR be supplied per request for UI-driven configuration.
 export function resolveEmbedConfig(reqEmbed = {}) {
   const d = config.embed;
-  const provider = String(reqEmbed.provider || d.provider || "openrouter").toLowerCase();
+  const provider = String(
+    reqEmbed.provider || d.provider || "openrouter",
+  ).toLowerCase();
   return {
     provider,
     model: String(reqEmbed.model || d.model || "").trim(),
@@ -18,9 +20,18 @@ export function resolveEmbedConfig(reqEmbed = {}) {
     apiKey: String(reqEmbed.apiKey || d.apiKey || "").trim(),
     // Clamped because it arrives from a browser form: a zero would divide the work into empty
     // batches forever and a five-figure value would be rejected by the provider on length.
-    batchSize: Math.max(1, Math.min(256, Math.round(Number(reqEmbed.batchSize) || d.batchSize || 32))),
-    maxCharsPerRequest: Number(reqEmbed.maxCharsPerRequest) || d.maxCharsPerRequest || 48000,
-    hedgeMs: Number.isFinite(Number(reqEmbed.hedgeMs)) ? Number(reqEmbed.hedgeMs) : d.hedgeMs,
+    batchSize: Math.max(
+      1,
+      Math.min(
+        256,
+        Math.round(Number(reqEmbed.batchSize) || d.batchSize || 32),
+      ),
+    ),
+    maxCharsPerRequest:
+      Number(reqEmbed.maxCharsPerRequest) || d.maxCharsPerRequest || 48000,
+    hedgeMs: Number.isFinite(Number(reqEmbed.hedgeMs))
+      ? Number(reqEmbed.hedgeMs)
+      : d.hedgeMs,
     timeoutMs: Number(reqEmbed.timeoutMs) || d.timeoutMs || 60000,
     maxRetries: Number.isFinite(Number(reqEmbed.maxRetries))
       ? Number(reqEmbed.maxRetries)
@@ -51,7 +62,8 @@ const TRANSFORMERS_DEFAULT_MODEL = "Xenova/all-MiniLM-L6-v2";
 function endpointFor(cfg) {
   if (cfg.provider === "openrouter") return `${OPENROUTER_BASE}/embeddings`;
   if (cfg.provider === "custom") {
-    if (!cfg.baseUrl) throw new HttpError(400, "custom embedding provider requires a baseUrl");
+    if (!cfg.baseUrl)
+      throw new HttpError(400, "custom embedding provider requires a baseUrl");
     return `${cfg.baseUrl.replace(/\/+$/, "")}/embeddings`;
   }
   if (cfg.provider === "mock") return "mock://embeddings";
@@ -65,7 +77,8 @@ function endpointFor(cfg) {
 let _extractor = null;
 let _extractorModel = null;
 async function transformersEmbed(texts, model) {
-  const wanted = model && model.includes("/") ? model : TRANSFORMERS_DEFAULT_MODEL;
+  const wanted =
+    model && model.includes("/") ? model : TRANSFORMERS_DEFAULT_MODEL;
   if (!_extractor || _extractorModel !== wanted) {
     let mod;
     try {
@@ -80,7 +93,9 @@ async function transformersEmbed(texts, model) {
         );
       }
     }
-    log.info(`Loading local embedding model ${wanted} (first run downloads it)...`);
+    log.info(
+      `Loading local embedding model ${wanted} (first run downloads it)...`,
+    );
     _extractor = await mod.pipeline("feature-extraction", wanted);
     _extractorModel = wanted;
   }
@@ -93,7 +108,10 @@ async function transformersEmbed(texts, model) {
 // yields similar vectors, which is enough to validate the round-trip plumbing.
 function mockEmbed(text) {
   const vec = new Array(MOCK_DIM).fill(0);
-  const tokens = String(text).toLowerCase().match(/[a-z0-9]+/g) || [];
+  const tokens =
+    String(text)
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) || [];
   for (const tok of tokens) {
     vec[contentHash(tok) % MOCK_DIM] += 1;
   }
@@ -127,11 +145,18 @@ let nextSlotAt = 0;
  * a quiet stretch says otherwise.
  */
 let adaptivePaceMs = 0;
-/** How long without a refusal before the learned pacing is given up. */
+/**
+ * How long without a refusal before the learned pacing is given up.
+ *
+ * Must comfortably exceed the longest single rate-limit wait, or the mechanism erases itself exactly
+ * when it is needed: a 60s wait would count as a quiet minute and reset the pace to zero immediately
+ * before the retry that provoked it.
+ */
 const PACE_DECAY_MS = 300_000;
 
 function paceInterval(cfg) {
-  if (adaptivePaceMs > 0 && Date.now() - lastRateLimitAt > PACE_DECAY_MS) adaptivePaceMs = 0;
+  if (adaptivePaceMs > 0 && Date.now() - lastRateLimitAt > PACE_DECAY_MS)
+    adaptivePaceMs = 0;
   return Math.max(cfg.minIntervalMs || 0, adaptivePaceMs);
 }
 
@@ -175,6 +200,72 @@ function rateLimited() {
   return Date.now() < pausedUntil || Date.now() - lastRateLimitAt < 60_000;
 }
 
+/**
+ * Which limiter refused us, because the two have different remedies and naming the wrong one costs
+ * the operator money to reach the same wall.
+ *
+ * OpenRouter returns its OWN platform limit as `{error:{code:429, metadata:{error_type:
+ * "rate_limit_exceeded"}}}` alongside `X-RateLimit-Limit`, `-Remaining` and `-Reset` headers, and
+ * that one is fixable from the account side: buy credits to raise a free-model daily cap, or move off
+ * a `:free` variant. When the UPSTREAM provider refuses, OpenRouter relays that body verbatim behind
+ * an `HTTP <status>:` prefix and sends no `X-RateLimit-*` at all — the limit belongs to a model's
+ * capacity rather than to the key, so no amount of spending changes it and the only levers are a
+ * different model, a different provider, or a slower request rate. Telling somebody to top up an
+ * account that was never the problem is worse than saying nothing.
+ *
+ * Headers decide it where they exist because they are unambiguous; the nested-body shape is the
+ * fallback. "unknown" carries no advice rather than a guess.
+ */
+function limiterOf(res, body) {
+  const limit = res.headers.get("x-ratelimit-limit");
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  const reset = res.headers.get("x-ratelimit-reset");
+  const relayed =
+    /^\s*(?:\{\s*"error".*)?HTTP \d{3}:/.test(body) ||
+    /\\"type\\":\s*\\"\w*rate/.test(body);
+
+  let scope = "unknown";
+  if (limit || remaining || reset) scope = "account";
+  else if (relayed) scope = "upstream";
+  else if (/"error_type"\s*:\s*"rate_limit_exceeded"/.test(body))
+    scope = "account";
+
+  const detail = [
+    limit ? `limit ${limit}` : "",
+    remaining ? `remaining ${remaining}` : "",
+    reset ? `resets ${reset}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const advice =
+    scope === "account"
+      ? "this is OpenRouter's own limit on the key: buying credits raises a free-model cap, or move off the :free variant"
+      : scope === "upstream"
+        ? "this is the UPSTREAM provider refusing, relayed by OpenRouter — credits will not change it. " +
+          "Slow the request rate (EMBED_MIN_INTERVAL_MS), raise EMBED_BATCH_SIZE so the same work is fewer requests, " +
+          "or use a different embedding model. EMBED_PROVIDER=transformers embeds in-process with no limit at all."
+        : "";
+
+  return { scope, detail, advice, resetHeader: reset };
+}
+
+/** A wait implied by the reset header, in ms, or 0 when it says nothing usable. */
+function waitFromReset(reset) {
+  const n = Number(reset);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // The header is documented as describing the limit's reset without pinning a unit, and the three
+  // plausible readings are far enough apart to tell by magnitude: a delta in seconds, epoch seconds,
+  // or epoch milliseconds. Anything that reduces to an implausible wait is discarded rather than
+  // guessed at — a bad reading here would either spin hot or park the run for hours.
+  const now = Date.now();
+  const candidates = [n * 1000, n * 1000 - now, n - now];
+  for (const ms of candidates) {
+    if (ms > 0 && ms <= 600_000) return ms;
+  }
+  return 0;
+}
+
 async function postEmbeddings(endpoint, cfg, batch, signal) {
   const headers = { "Content-Type": "application/json" };
   if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
@@ -203,10 +294,18 @@ async function postEmbeddings(endpoint, cfg, batch, signal) {
     err.providerStatus = res.status;
     err.retryable = res.status === 429 || res.status >= 500;
     err.retryAfter = Number(res.headers.get("retry-after")) || 0;
+    if (res.status === 429) {
+      const who = limiterOf(res, body);
+      err.limiter = who.scope;
+      err.limiterDetail = who.detail;
+      err.limiterAdvice = who.advice;
+      if (!err.retryAfter) err.resetWaitMs = waitFromReset(who.resetHeader);
+    }
     throw err;
   }
   const json = await res.json();
-  if (!Array.isArray(json.data)) throw new HttpError(502, "embedding provider returned no data[]");
+  if (!Array.isArray(json.data))
+    throw new HttpError(502, "embedding provider returned no data[]");
   return json.data
     .slice()
     .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
@@ -224,14 +323,17 @@ async function postEmbeddings(endpoint, cfg, batch, signal) {
  */
 async function embedBatchHedged(endpoint, cfg, batch) {
   if (cfg.provider === "mock") return batch.map(mockEmbed);
-  if (cfg.provider === "transformers") return transformersEmbed(batch, cfg.model);
+  if (cfg.provider === "transformers")
+    return transformersEmbed(batch, cfg.model);
 
   const attempt = () => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), cfg.timeoutMs);
     const gap = paceInterval(cfg);
     if (gap > 0) nextSlotAt = Date.now() + gap;
-    return postEmbeddings(endpoint, cfg, batch, ac.signal).finally(() => clearTimeout(timer));
+    return postEmbeddings(endpoint, cfg, batch, ac.signal).finally(() =>
+      clearTimeout(timer),
+    );
   };
 
   const once = () => {
@@ -239,7 +341,10 @@ async function embedBatchHedged(endpoint, cfg, batch) {
     const first = attempt();
     let hedgeTimer;
     const hedge = new Promise((resolve, reject) => {
-      hedgeTimer = setTimeout(() => attempt().then(resolve, reject), cfg.hedgeMs);
+      hedgeTimer = setTimeout(
+        () => attempt().then(resolve, reject),
+        cfg.hedgeMs,
+      );
     });
     return Promise.race([first, hedge]).finally(() => clearTimeout(hedgeTimer));
   };
@@ -272,23 +377,48 @@ async function embedBatchHedged(endpoint, cfg, batch) {
       const wait = err?.retryAfter
         ? err.retryAfter * 1000
         : limited
-          ? // Escalating from a wait long enough for a per-minute window to actually roll over.
-            // Jitter is proportional here rather than a flat second: the gate already serialises
-            // this process, so it only exists to de-correlate several services sharing one key,
-            // and a flat term would dominate the short waits a test or a fast limit uses.
-            Math.min(120_000, cfg.rateLimitWaitMs * limitedTries) * (1 + Math.random() * 0.1)
+          ? // A reset header, when the provider sent one, beats any schedule we could invent.
+            // Otherwise escalate from a wait long enough for a per-minute window to actually roll
+            // over. Jitter is proportional rather than a flat second: the gate already serialises
+            // this process, so it only exists to de-correlate several services sharing one key, and
+            // a flat term would dominate the short waits a test or a fast limit uses.
+            err.resetWaitMs ||
+            Math.min(120_000, cfg.rateLimitWaitMs * limitedTries) *
+              (1 + Math.random() * 0.1)
           : Math.min(60_000, 2 ** tries * 1000) + Math.random() * 1000;
 
       if (limited) {
-        if (spentOnRateLimit + wait > cfg.rateLimitBudgetMs) throw err;
+        // Whether to keep holding THIS request open, which is a different question from whether the
+        // work is worth retrying. See rateLimitBudgetMs: the caller owns the long wait.
+        if (spentOnRateLimit + wait > cfg.rateLimitBudgetMs) {
+          pauseAll(wait, cfg);
+          err.message +=
+            ` — handing back after ${Math.round(spentOnRateLimit / 1000)}s so the caller can wait` +
+            ` visibly and resume; the service will stay paced at ${Math.round(adaptivePaceMs / 1000)}s between requests`;
+          throw err;
+        }
         spentOnRateLimit += wait;
+        // Naming the limiter matters more than the numbers: an upstream refusal relayed through
+        // OpenRouter looks identical to OpenRouter's own limit in a log, and the remedies are
+        // opposite. Without this the operator's first move is to buy credits that cannot help.
+        const who =
+          err.limiter === "unknown"
+            ? ""
+            : ` [${err.limiter} limit${err.limiterDetail ? `: ${err.limiterDetail}` : ""}]`;
         log.warn(
-          `embed rate-limited, waiting ${Math.round(wait / 1000)}s ` +
-            `(${Math.round(spentOnRateLimit / 1000)}s of ${Math.round(cfg.rateLimitBudgetMs / 1000)}s patience spent): ${err.message}`,
+          `embed rate-limited${who}, waiting ${Math.round(wait / 1000)}s ` +
+            `(${Math.round(spentOnRateLimit / 1000)}s of ${Math.round(cfg.rateLimitBudgetMs / 1000)}s hold): ${err.message}`,
         );
+        if (err.limiterAdvice && limitedTries === 1)
+          log.warn(`embed rate limit: ${err.limiterAdvice}`);
         // Only a rate limit is everyone's problem. Stalling every other request for one timeout
         // would throw away throughput for nothing.
         pauseAll(wait, cfg);
+        if (adaptivePaceMs > 0) {
+          log.info(
+            `embed pacing now ${Math.round(adaptivePaceMs / 1000)}s between requests`,
+          );
+        }
       } else {
         log.warn(
           `embed retry ${tries}/${cfg.maxRetries} in ${Math.round(wait / 1000)}s: ${err.message}`,
@@ -350,7 +480,10 @@ export function planBatches(texts, cfg) {
   let chars = 0;
   for (let i = 0; i < texts.length; i++) {
     const size = String(texts[i] ?? "").length;
-    if (current.length > 0 && (current.length >= cfg.batchSize || chars + size > cfg.maxCharsPerRequest)) {
+    if (
+      current.length > 0 &&
+      (current.length >= cfg.batchSize || chars + size > cfg.maxCharsPerRequest)
+    ) {
       groups.push(current);
       current = [];
       chars = 0;
@@ -369,7 +502,8 @@ export function planBatches(texts, cfg) {
  */
 export async function embedTexts(texts, reqEmbed) {
   const cfg = resolveEmbedConfig(reqEmbed);
-  const modelOptional = cfg.provider === "mock" || cfg.provider === "transformers";
+  const modelOptional =
+    cfg.provider === "mock" || cfg.provider === "transformers";
   if (!modelOptional && !cfg.model) {
     throw new HttpError(400, "embedding model is required");
   }
@@ -387,7 +521,9 @@ export async function embedTexts(texts, reqEmbed) {
       // endpoint that just said stop. It is an amplifier dressed as a mitigation, so a batch that
       // ran out of retry patience is reported rather than fanned out.
       if (err?.providerStatus === 429) throw err;
-      log.warn(`embed batch failed (${err.message}); retrying ${batch.length} items individually`);
+      log.warn(
+        `embed batch failed (${err.message}); retrying ${batch.length} items individually`,
+      );
       for (let k = 0; k < batch.length; k++) {
         out[idxs[k]] = (await embedBatchHedged(endpoint, cfg, [batch[k]]))[0];
       }

@@ -77,18 +77,30 @@ export const config = {
     hedgeMs: num("EMBED_HEDGE_MS", 15000),
     timeoutMs: num("EMBED_TIMEOUT_MS", 60000),
     maxRetries: num("EMBED_MAX_RETRIES", 5),
-    // How long to keep trying a RATE-LIMITED batch, in ms. Attempts are the wrong unit for a rate
-    // limit: five retries of exponential backoff from 2s spend themselves inside a single
-    // per-minute window and then give up, which is what made a compendium ingest unfinishable.
-    rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 600000),
+    // How long the service will keep ONE HTTP request open waiting out a rate limit, in ms.
+    //
+    // Attempts are the wrong unit for a rate limit -- five exponential retries from 2s all land
+    // inside a single per-minute window and then give up -- but so is a very long hold. 600000 (the
+    // 1.2.0 default) meant the service vanished for up to ten minutes mid-request, which fails two
+    // ways at once: a reverse proxy cuts the connection first (nginx proxy_read_timeout defaults to
+    // 60s) and, worse, the CALLER cannot see the wait, so noodlr's ingest queue reported "sending"
+    // with no countdown and read as a hang. The caller is the side with a progress bar, a cancel
+    // button and a resume index, so the long wait belongs there: the service rides out a blip, then
+    // hands back a 429 and stays paced. Keep this under any proxy read timeout in front of it.
+    rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 45000),
     // First wait after a 429 that carries no Retry-After. A per-minute window does not clear in two
     // seconds, so starting small only burns the budget reaching the same answer.
     rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 20000),
     // Once a 429 has arrived, the account demonstrably cannot take requests at full speed, so pace
     // them from then on instead of bursting into the same wall every window. Doubles per rate limit,
     // capped, and decays on its own. 0 disables the adaptation.
+    //
+    // The ceiling exists to stop a runaway, NOT to cap compliance, and 6000 (the 1.2.0 default) got
+    // that backwards: 6s is 10 requests a minute, so an upstream provider that wants fewer than that
+    // could never be satisfied and every retry was refused the instant it left. 30s reaches 2/min,
+    // which is slow enough to be nearly anything's floor and still terminates.
     paceStepMs: num("EMBED_PACE_STEP_MS", 1000),
-    paceMaxMs: num("EMBED_PACE_MAX_MS", 6000),
+    paceMaxMs: num("EMBED_PACE_MAX_MS", 30000),
     // Minimum gap between embedding requests, in ms. 0 = as fast as they complete (with the
     // adaptive pacing above as the safety net). Set it when a provider's limit is known and low:
     // 1200 is roughly 50 requests a minute.
