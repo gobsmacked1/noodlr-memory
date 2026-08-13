@@ -374,10 +374,14 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
-- **`embedding provider 429`** — something refused the embedding request. The service waits it *out*
-  rather than retrying through it: the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (**1s** as of v1.3.1,
-  doubling on each further refusal) and honours `Retry-After` or `X-RateLimit-Reset` when the provider
-  sends one. The pause is process-wide and hedging stands down for a minute.
+- **`embedding provider 429`** — something refused the embedding request. The service retries it away:
+  the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (**250ms** as of v1.3.2, doubling on each further
+  refusal) and honours `Retry-After` or `X-RateLimit-Reset` when the provider sends one. The pause is
+  process-wide and hedging stands down for a few seconds.
+  **A refusal the service recovers from is logged at `info` and nothing else happens** — the request
+  succeeded, your ingest is fine, and there is nothing to do. It escalates to `warn`, with the full
+  advice below, only once one batch has spent five seconds being refused. If you are reading a `warn`,
+  the numbers on the line are the ones that matter: which limiter, which model, how many texts.
   Adaptive self-pacing — an extra `EMBED_PACE_STEP_MS` gap added to every later request after each
   429, up to `EMBED_PACE_MAX_MS` — is **off by default** as of v1.3.1. It assumed a 429 meant "the
   account cannot take requests at this rate", which is only true of `[account limit]`; applied to an
@@ -402,6 +406,10 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
   request of N against N of one, and `routing` lists the model's providers. Run it with the service's
   own environment:
   `cd /opt/noodlr-memory && set -a && . ./.env && set +a && node scripts/probe-rate.mjs sweep`
+  On the reference host (`perplexity/pplx-embed-v1-4b`, one provider) `recover` refused the **first**
+  request out of a cold process and cleared 250ms later. Both halves are worth knowing: a limit your
+  request rate could trip cannot refuse your first call, and a refusal that clears in a quarter of a
+  second needs a retry rather than a policy.
   Since v1.2.1 the service holds one HTTP request open for at most `EMBED_RATE_LIMIT_BUDGET_MS`
   (**45s**) before handing the 429 back and letting the caller wait. That is deliberate and replaces a
   10-minute hold: the caller is the side with a progress bar, a cancel button and a resume index, so a

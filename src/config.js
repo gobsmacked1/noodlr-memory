@@ -90,17 +90,20 @@ export const config = {
     // button and a resume index, so the long wait belongs there: the service rides out a blip, then
     // hands back a 429 and stays paced. Keep this under any proxy read timeout in front of it.
     rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 45000),
-    // First wait after a 429 that carries no Retry-After.
+    // First wait after a 429 that carries no Retry-After. MEASURED, not reasoned.
     //
     // 1.1.1 through 1.2.1 set this to 20s on the reasoning that "a per-minute window does not clear
-    // in two seconds". That reasoning was sound and the premise was wrong, and an operator's
-    // OpenRouter generation log is what settled it: a single-text embed returned **200** at
-    // 21:12:00.502 and another was refused ~1.0s later. So the refusal is momentary saturation
-    // upstream, not a rolled account window — and a blip that clears in about a second was being
-    // answered with a 21-second park, which spent the whole hold to arrive at a failure the provider
-    // had already stopped issuing. Start at the observed scale and escalate; Retry-After, when the
-    // provider sends one, still beats any schedule we could invent.
-    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 1000),
+    // in two seconds". The reasoning was sound and the premise was wrong; 1.3.1 cut it to 1s off an
+    // operator's generation log, and then `scripts/probe-rate.mjs recover` measured it on the same
+    // host: the refusal cleared on the FIRST retry, 250ms later. Nothing longer has any evidence
+    // behind it, and the ladder doubles, so a genuinely window-shaped limit is still reached in a few
+    // cheap attempts. Retry-After, when the provider sends one, beats any schedule we could invent.
+    //
+    // The other half of that measurement matters more than the number: the refused request was the
+    // FIRST one out of a cold process, with no prior traffic of ours at all. A limit our rate could
+    // trip cannot behave that way. It is a single-provider model's shared capacity saying "not right
+    // now", which is why every remedy shaped like "ask more slowly" is off by default below.
+    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 250),
     // Self-pacing after a 429: OFF by default as of 1.3.1, and the default is the whole decision.
     //
     // The mechanism assumed a 429 proves "the account cannot take requests at this rate", which only

@@ -39,15 +39,19 @@ export function resolveEmbedConfig(reqEmbed = {}) {
     rateLimitBudgetMs: Number.isFinite(Number(reqEmbed.rateLimitBudgetMs))
       ? Number(reqEmbed.rateLimitBudgetMs)
       : (d.rateLimitBudgetMs ?? 600_000),
+    // These `??` arms only run if config.embed is missing the key entirely, so they are a second
+    // statement of the default and have to agree with config.js — a stale one here is a value nobody
+    // chose, arriving on exactly the path (a hand-built cfg in a test or a caller) where it is least
+    // likely to be noticed. See EMBED_RATE_LIMIT_WAIT_MS and EMBED_PACE_MAX_MS there for the whys.
     rateLimitWaitMs: Number.isFinite(Number(reqEmbed.rateLimitWaitMs))
       ? Number(reqEmbed.rateLimitWaitMs)
-      : (d.rateLimitWaitMs ?? 20_000),
+      : (d.rateLimitWaitMs ?? 250),
     paceStepMs: Number.isFinite(Number(reqEmbed.paceStepMs))
       ? Number(reqEmbed.paceStepMs)
       : (d.paceStepMs ?? 1000),
     paceMaxMs: Number.isFinite(Number(reqEmbed.paceMaxMs))
       ? Number(reqEmbed.paceMaxMs)
-      : (d.paceMaxMs ?? 6000),
+      : (d.paceMaxMs ?? 0),
     // A floor on the gap between requests, for an account whose limit is low enough that backoff
     // alone means backing off constantly. Off by default: the retry gate is the correct mechanism,
     // and pacing every request to suit the worst case makes a healthy key needlessly slow.
@@ -120,6 +124,23 @@ function mockEmbed(text) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A duration for a human, honest below a second.
+ *
+ * Everything here used to print `Math.round(ms / 1000)}s`, which was fine while every wait was
+ * measured in tens of seconds and became a lie the moment they were measured properly: a 250ms retry
+ * reported as "waiting 0s" and a 120ms learned gap as "pacing now 0s between requests". A log line
+ * that rounds the interesting number away is worse than no line, because it looks like a bug in the
+ * mechanism rather than in the reporting.
+ */
+function dur(ms) {
+  const n = Math.max(0, Math.round(ms));
+  if (n < 1000) return `${n}ms`;
+  return n % 1000 === 0 || n >= 10_000
+    ? `${Math.round(n / 1000)}s`
+    : `${(n / 1000).toFixed(1)}s`;
+}
 
 /**
  * A rate limit belongs to the API key, so backing off from one has to be shared too.
@@ -198,9 +219,37 @@ export function rateLimitState() {
   };
 }
 
+/**
+ * How long after a refusal a second concurrent request is still assumed to make things worse.
+ *
+ * This was a flat minute, sized for the same imagined per-minute window as the old 20s wait, and it
+ * is the wrong unit for what was measured: `probe-rate.mjs recover` cleared the refusal on the first
+ * retry 250ms later. A minute of margin around a quarter-second event means one blip during a bulk
+ * ingest switches hedging off for the interactive query that arrives ten seconds later — and a query
+ * is the only thing hedging still serves, since it now fires for a single text only. Seconds, not
+ * minutes: long enough to cover a refusal that needs a couple of rungs of the ladder, short enough
+ * that a recovered blip does not go on costing anything.
+ */
+const REFUSAL_SETTLE_MS = 5_000;
+
+/**
+ * Cumulative wait within one batch before a refusal stops being routine and becomes a report.
+ *
+ * A single-provider model refuses the occasional request as a matter of course — the measured one hit
+ * the very first call out of a cold process — and we retry it away in a quarter of a second. Logging
+ * that at `warn`, with a paragraph of remedies, is how a working ingest came to read as a broken
+ * service; the operator's report was that it "isn't even able to perform the self-test without being
+ * throttled and erroring", and by then the self-test had in fact succeeded. Same doctrine as the
+ * module's own failure classifier: severity has to track what the operator should DO, and there is
+ * nothing to do about a refusal we already recovered from.
+ */
+const REFUSAL_NOISE_MS = 5_000;
+
 /** True while a 429 is recent enough that a second concurrent request would only make it worse. */
 function rateLimited() {
-  return Date.now() < pausedUntil || Date.now() - lastRateLimitAt < 60_000;
+  return (
+    Date.now() < pausedUntil || Date.now() - lastRateLimitAt < REFUSAL_SETTLE_MS
+  );
 }
 
 /**
@@ -407,7 +456,8 @@ async function embedBatchHedged(endpoint, cfg, batch) {
   const bulk = batch.length > 1;
 
   const once = () => {
-    if (!cfg.hedgeMs || cfg.hedgeMs <= 0 || bulk || rateLimited()) return attempt();
+    if (!cfg.hedgeMs || cfg.hedgeMs <= 0 || bulk || rateLimited())
+      return attempt();
     const first = attempt();
     let hedgeTimer;
     const hedge = new Promise((resolve, reject) => {
@@ -429,6 +479,8 @@ async function embedBatchHedged(endpoint, cfg, batch) {
   // hedge check into a call on a number -- which only shows up when hedging is on, i.e. in production.
   let limitedTries = 0;
   let spentOnRateLimit = 0;
+  /** Whether this batch has already had the full explanation, so it is given once and not per rung. */
+  let advised = false;
   for (;;) {
     tries++;
     await awaitGate();
@@ -448,13 +500,13 @@ async function embedBatchHedged(endpoint, cfg, batch) {
         ? err.retryAfter * 1000
         : limited
           ? // A reset header, when the provider sent one, beats any schedule we could invent.
-            // Otherwise DOUBLE from the observed scale of a momentary refusal (see
-            // rateLimitWaitMs): 1s, 2s, 4s, 8s, 16s inside the hold. Probing the short wait first is
-            // what the evidence asks for — a provider seen serving one second earlier does not need
-            // twenty — and doubling still reaches a genuinely long wait quickly if this one is a real
-            // window rather than a blip. Jitter is proportional rather than a flat second: the gate
-            // already serialises this process, so it only exists to de-correlate several services
-            // sharing one key, and a flat term would dominate the short waits.
+            // Otherwise DOUBLE from the MEASURED scale of a momentary refusal (see rateLimitWaitMs):
+            // 250ms, 0.5s, 1s, 2s, 4s, 8s, 16s, all inside the 45s hold. Probing the short wait first
+            // is what the evidence asks for — the measured refusal cleared on the first 250ms retry —
+            // and doubling still reaches a genuinely long wait within the same hold if this one turns
+            // out to be a real window rather than a blip. Jitter is proportional rather than a flat
+            // second: the gate already serialises this process, so it only exists to de-correlate
+            // several services sharing one key, and a flat term would dominate the short waits.
             err.resetWaitMs ||
             Math.min(120_000, cfg.rateLimitWaitMs * 2 ** (limitedTries - 1)) *
               (1 + Math.random() * 0.1)
@@ -466,10 +518,10 @@ async function embedBatchHedged(endpoint, cfg, batch) {
         if (spentOnRateLimit + wait > cfg.rateLimitBudgetMs) {
           pauseAll(wait, cfg);
           err.message +=
-            ` — handing back after ${Math.round(spentOnRateLimit / 1000)}s so the caller can wait` +
+            ` — handing back after ${dur(spentOnRateLimit)} so the caller can wait` +
             ` visibly and resume` +
             (adaptivePaceMs > 0
-              ? `; the service will stay paced at ${Math.round(adaptivePaceMs / 1000)}s between requests`
+              ? `; the service will stay paced at ${dur(adaptivePaceMs)} between requests`
               : "");
           throw err;
         }
@@ -481,32 +533,38 @@ async function embedBatchHedged(endpoint, cfg, batch) {
           err.limiter === "unknown"
             ? ""
             : ` [${err.limiter} limit${err.limiterDetail ? `: ${err.limiterDetail}` : ""}]`;
+        // Routine until it is not. See REFUSAL_NOISE_MS: a blip we retry away is an `info` line and
+        // no advice, because there is nothing for anybody to do about it, while a batch that has been
+        // refused for seconds is the operator's problem and gets the whole explanation once.
+        const noisy = spentOnRateLimit >= REFUSAL_NOISE_MS;
+        const size = err.batchSize ?? batch.length;
         // The model and the size are what make the advice checkable: a per-request override means the
         // env default is not necessarily what was refused, and one text versus sixty-four is the
         // difference between "ask more slowly" and "there is nothing left to slow down".
-        log.warn(
-          `embed rate-limited${who} on ${cfg.model} (${err.batchSize ?? batch.length} text${
-            (err.batchSize ?? batch.length) === 1 ? "" : "s"
-          }), waiting ${Math.round(wait / 1000)}s ` +
-            `(${Math.round(spentOnRateLimit / 1000)}s of ${Math.round(cfg.rateLimitBudgetMs / 1000)}s hold): ${err.message}`,
-        );
-        if (err.limiterAdvice && limitedTries === 1)
-          log.warn(`embed rate limit: ${err.limiterAdvice}`);
-        if (limitedTries === 1 && cfg.provider === "openrouter") {
-          const note = await routingNote(cfg.model);
-          if (note) log.warn(`embed rate limit: ${note}`);
+        const line =
+          `embed rate-limited${who} on ${cfg.model} (${size} text${size === 1 ? "" : "s"}), ` +
+          `retrying in ${dur(wait)} (attempt ${limitedTries}, ${dur(spentOnRateLimit)} of ` +
+          `${dur(cfg.rateLimitBudgetMs)} hold): ${err.message}`;
+        if (noisy) log.warn(line);
+        else log.info(line);
+        if (noisy && !advised) {
+          advised = true;
+          if (err.limiterAdvice)
+            log.warn(`embed rate limit: ${err.limiterAdvice}`);
+          if (cfg.provider === "openrouter") {
+            const note = await routingNote(cfg.model);
+            if (note) log.warn(`embed rate limit: ${note}`);
+          }
         }
         // Only a rate limit is everyone's problem. Stalling every other request for one timeout
         // would throw away throughput for nothing.
         pauseAll(wait, cfg);
         if (adaptivePaceMs > 0) {
-          log.info(
-            `embed pacing now ${Math.round(adaptivePaceMs / 1000)}s between requests`,
-          );
+          log.info(`embed pacing now ${dur(adaptivePaceMs)} between requests`);
         }
       } else {
         log.warn(
-          `embed retry ${tries}/${cfg.maxRetries} in ${Math.round(wait / 1000)}s: ${err.message}`,
+          `embed retry ${tries}/${cfg.maxRetries} in ${dur(wait)}: ${err.message}`,
         );
       }
       await sleep(wait);

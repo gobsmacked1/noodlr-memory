@@ -88,7 +88,12 @@ async function embed(inputs) {
       body: body.slice(0, 200),
     };
   } catch (err) {
-    return { ok: false, status: 0, ms: Date.now() - started, body: String(err) };
+    return {
+      ok: false,
+      status: 0,
+      ms: Date.now() - started,
+      body: String(err),
+    };
   }
 }
 
@@ -100,12 +105,16 @@ function line(i, r, extra = "") {
         r.retryAfter ? `retry-after=${r.retryAfter}` : "",
         r.remaining ? `remaining=${r.remaining}` : "",
         r.reset ? `reset=${r.reset}` : "",
-        r.status === 429 && !r.reset && !r.remaining ? "no x-ratelimit-* → UPSTREAM" : "",
+        r.status === 429 && !r.reset && !r.remaining
+          ? "no x-ratelimit-* → UPSTREAM"
+          : "",
         r.body ? r.body.replace(/\s+/g, " ") : "",
       ]
         .filter(Boolean)
         .join("  ");
-  console.log(`  ${String(i).padStart(3)}  ${tag}  ${String(r.ms).padStart(6)}ms  ${extra}${detail}`);
+  console.log(
+    `  ${String(i).padStart(3)}  ${tag}  ${String(r.ms).padStart(6)}ms  ${extra}${detail}`,
+  );
 }
 
 function tally(results) {
@@ -172,14 +181,26 @@ async function recover() {
   console.log(`recover: how long a refusal actually lasts  (${model})\n`);
   console.log("Provoking a refusal with a burst:");
   let hit = null;
+  let at = 0;
   for (let i = 1; i <= 12; i++) {
     const r = await embed([text()]);
     line(i, r);
     if (r.status === 429) {
       hit = r;
+      at = i;
       break;
     }
   }
+  // WHICH request was refused answers a bigger question than how long it lasted, and it is free.
+  // This process has sent nothing before its first call, so a refusal there cannot be a consequence
+  // of our rate — it is the model's shared capacity — and every remedy shaped like "ask more slowly"
+  // is answering a question the provider never asked.
+  if (hit && at === 1)
+    console.log(
+      "\nRefused on the FIRST request from a cold process, having sent nothing before it. Your " +
+        "request rate did not cause this and cannot fix it: leave EMBED_MIN_INTERVAL_MS and " +
+        "EMBED_PACE_MAX_MS at 0, and treat the refusal as something to retry rather than to avoid.",
+    );
   if (!hit) {
     console.log(
       "\nNo refusal in 12 back-to-back requests. Nothing here needs a wait at all: whatever you " +
@@ -188,7 +209,9 @@ async function recover() {
     return;
   }
   if (hit.retryAfter)
-    console.log(`\nThe provider asked for ${hit.retryAfter}s. That always wins over any schedule.`);
+    console.log(
+      `\nThe provider asked for ${hit.retryAfter}s. That always wins over any schedule.`,
+    );
   console.log("\nRetrying after each wait (first success is the answer):");
   for (const wait of [250, 500, 1000, 2000, 4000, 8000, 16000]) {
     await sleep(wait);
@@ -209,7 +232,9 @@ async function recover() {
 }
 
 async function batch(n) {
-  console.log(`batch: ${n} texts as ONE request, then as ${n} requests  (${model})\n`);
+  console.log(
+    `batch: ${n} texts as ONE request, then as ${n} requests  (${model})\n`,
+  );
   const many = Array.from({ length: n }, () => text());
   const one = await embed(many);
   line(1, one, `1 request of ${n} texts  `);
@@ -241,7 +266,8 @@ async function routing() {
   }
   const eps = (await res.json())?.data?.endpoints ?? [];
   console.log(`${model}: ${eps.length} provider endpoint(s)`);
-  for (const e of eps) console.log(`  - ${e.provider_name} (ctx ${e.context_length})`);
+  for (const e of eps)
+    console.log(`  - ${e.provider_name} (ctx ${e.context_length})`);
   if (eps.length === 1)
     console.log(
       "\nONE provider means OpenRouter has nothing to fail over to, so that provider's own " +

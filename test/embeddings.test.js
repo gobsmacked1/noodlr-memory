@@ -77,9 +77,9 @@ const cfg = {
   // Hedging off by default here: it is a latency feature and would double every count below.
   hedgeMs: 0,
   timeoutMs: 5000,
-  // The shipped defaults wait 20s on the first 429 and then pace every later request, both of which
-  // are the point (see config.js) and neither of which belongs in a test's wall clock. Every test
-  // that means to exercise the sizing of those waits sets them explicitly.
+  // Shorter than the shipped 250ms and with pacing disabled, so the request COUNTS below mean
+  // something without a test's wall clock depending on the sizing. Every test that means to exercise
+  // a wait or the pacing sets them explicitly, and the shipped-defaults test above deletes them.
   rateLimitWaitMs: 10,
   paceStepMs: 0,
 };
@@ -186,6 +186,34 @@ test("one 429 paces every later request, instead of bursting into the next windo
     gap >= 110,
     `expected the learned pacing between requests, saw ${gap}ms`,
   );
+});
+
+test("at the shipped defaults, a recovered 429 leaves nothing behind", async () => {
+  // The regression this release exists for. Pacing after a refusal is an opt-in as of 1.3.1, because
+  // the mechanism assumes our rate caused the 429 — true of a limit on the key, false of a
+  // single-provider model's shared capacity, which was the case actually being hit. Left on, one blip
+  // during a bulk ingest slowed everything afterwards for PACE_DECAY_MS, including the diagnostics
+  // self-test, so a service that had recovered perfectly well presented as one that could no longer
+  // embed a single sentence. Restoring a non-zero paceMaxMs default must fail here.
+  const calls = stubProvider({ fails: 1, retryAfter: 0 });
+  const { paceStepMs, paceMaxMs, rateLimitWaitMs, ...shipped } = cfg;
+  void paceStepMs;
+  void paceMaxMs;
+  void rateLimitWaitMs;
+  const started = Date.now();
+  const vecs = await embedTexts(["a"], shipped);
+  const took = Date.now() - started;
+  assert.equal(vecs.length, 1);
+  assert.equal(calls.length, 2, "the refusal and its retry");
+  assert.equal(
+    rateLimitState().pacingMs,
+    0,
+    "no learned pacing at the shipped defaults",
+  );
+  // The measured refusal cleared 250ms later, so the first wait is sized to that rather than to an
+  // imagined per-minute window. A default that parks for 20s spends a caller's whole patience budget
+  // arriving at a failure the provider had already stopped issuing.
+  assert.ok(took < 3000, `expected a sub-second first wait, took ${took}ms`);
 });
 
 test("a 429 is survived with hedging ON, which is the shipped default", async () => {
@@ -302,7 +330,13 @@ test("identical texts are embedded once and the vector is shared", async () => {
   // wording is shared by hundreds of creatures. Paying per copy bought nothing, because a store row
   // is identified by the hash of its text and the copies were always going to be one row.
   const calls = stubProvider();
-  const texts = ["pack tactics", "bite", "pack tactics", "pack tactics", "claw"];
+  const texts = [
+    "pack tactics",
+    "bite",
+    "pack tactics",
+    "pack tactics",
+    "claw",
+  ];
   const vecs = await embedTexts(texts, { ...cfg, batchSize: 50 });
 
   assert.equal(vecs.length, texts.length, "every input still gets a vector");

@@ -112,8 +112,11 @@ remedies: OpenRouter's own cap on your key (fixable with credits, or by leaving 
 is often not about your rate at all — the log reports how many providers serve the
 model, and where that is **one**, OpenRouter cannot route around a busy provider,
 so a single request can be refused seconds after an identical one succeeded. Change
-model or embed locally; pacing will not help. Hence `EMBED_PACE_MAX_MS` defaults to
-0 (no self-pacing after a 429) and the first wait is 1s rather than 20s.
+model or embed locally; pacing will not help. Measured on a single-provider model,
+the **first** request out of a cold process was refused and cleared 250ms later —
+a limit your rate could trip cannot do that. Hence `EMBED_PACE_MAX_MS` defaults to
+0 (no self-pacing after a 429), the first wait is 250ms rather than 20s, and a
+refusal the service retries away is logged at `info` rather than as a warning.
 
 **`node scripts/probe-rate.mjs`** measures what your provider actually tolerates,
 talking to it directly with every retry, hedge and pace bypassed: `sweep`, `recover`,
