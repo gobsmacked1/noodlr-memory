@@ -77,7 +77,7 @@ const cfg = {
   // Hedging off by default here: it is a latency feature and would double every count below.
   hedgeMs: 0,
   timeoutMs: 5000,
-  // Shorter than the shipped 250ms and with pacing disabled, so the request COUNTS below mean
+  // Shorter than the shipped 500ms and with pacing disabled, so the request COUNTS below mean
   // something without a test's wall clock depending on the sizing. Every test that means to exercise
   // a wait or the pacing sets them explicitly, and the shipped-defaults test above deletes them.
   rateLimitWaitMs: 10,
@@ -210,9 +210,11 @@ test("at the shipped defaults, a recovered 429 leaves nothing behind", async () 
     0,
     "no learned pacing at the shipped defaults",
   );
-  // The measured refusal cleared 250ms later, so the first wait is sized to that rather than to an
-  // imagined per-minute window. A default that parks for 20s spends a caller's whole patience budget
-  // arriving at a failure the provider had already stopped issuing.
+  // Measured refusals cleared 250ms and 500ms after arriving, so the first wait is sized to that
+  // scale rather than to an imagined per-minute window. A default that parks for 20s spends a
+  // caller's whole patience budget arriving at a failure the provider had already stopped issuing.
+  // The bound is loose on purpose: this asserts the ORDER OF MAGNITUDE, so re-sizing the wait within
+  // the measured range is not a test change, while restoring a window-shaped default fails here.
   assert.ok(took < 3000, `expected a sub-second first wait, took ${took}ms`);
 });
 

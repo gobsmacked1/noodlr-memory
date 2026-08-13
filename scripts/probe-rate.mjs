@@ -218,9 +218,20 @@ async function recover() {
     const r = await embed([text()]);
     line(wait, r, `after ${wait}ms  `);
     if (r.ok) {
+      // Deliberately NOT "set the wait to this number". One run is one sample, and repeat runs on
+      // the same host have differed by 2x (250ms, then 500ms) — a transient refusal lasts as long as
+      // that provider's saturation happens to last. The shipped wait doubles, so it only needs to be
+      // in the right order of magnitude; re-tuning it to match the newest sample is fitting to noise.
+      const shipped = 500;
       console.log(
-        `\n=> Cleared after ${wait}ms. Set EMBED_RATE_LIMIT_WAIT_MS near ${wait} — the wait doubles ` +
-          `from there, so it reaches a long wait quickly if a later refusal needs one.`,
+        `\n=> Cleared after ${wait}ms, which is ${
+          wait <= shipped * 8
+            ? `the scale EMBED_RATE_LIMIT_WAIT_MS (${shipped}ms, doubling) already covers — no change ` +
+              `needed. Re-run this a few times before touching it: the number moves between runs.`
+            : `well past the ${shipped}ms EMBED_RATE_LIMIT_WAIT_MS assumes. If that repeats across ` +
+              `runs, this limit is window-shaped rather than a blip: raise the wait and prefer a ` +
+              `larger EMBED_BATCH_SIZE so the same corpus is fewer requests.`
+        }`,
       );
       return;
     }

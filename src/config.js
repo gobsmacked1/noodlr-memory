@@ -90,20 +90,32 @@ export const config = {
     // button and a resume index, so the long wait belongs there: the service rides out a blip, then
     // hands back a 429 and stays paced. Keep this under any proxy read timeout in front of it.
     rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 45000),
-    // First wait after a 429 that carries no Retry-After. MEASURED, not reasoned.
+    // First wait after a 429 that carries no Retry-After. MEASURED, not reasoned — and measured
+    // twice, which turned out to matter more than either number.
     //
     // 1.1.1 through 1.2.1 set this to 20s on the reasoning that "a per-minute window does not clear
     // in two seconds". The reasoning was sound and the premise was wrong; 1.3.1 cut it to 1s off an
-    // operator's generation log, and then `scripts/probe-rate.mjs recover` measured it on the same
-    // host: the refusal cleared on the FIRST retry, 250ms later. Nothing longer has any evidence
-    // behind it, and the ladder doubles, so a genuinely window-shaped limit is still reached in a few
-    // cheap attempts. Retry-After, when the provider sends one, beats any schedule we could invent.
+    // operator's generation log, and 1.3.2 to 250ms because `scripts/probe-rate.mjs recover` cleared
+    // on its first 250ms retry. A second run of the same probe against the same host was still
+    // refused at 250ms and cleared at 500ms. So the recovery time is NOT a constant waiting to be
+    // matched — it is whatever that provider's saturation happens to be in that instant — and 500 is
+    // the top of the observed range, not a newer measurement superseding an older one.
     //
-    // The other half of that measurement matters more than the number: the refused request was the
-    // FIRST one out of a cold process, with no prior traffic of ours at all. A limit our rate could
-    // trip cannot behave that way. It is a single-provider model's shared capacity saying "not right
-    // now", which is why every remedy shaped like "ask more slowly" is off by default below.
-    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 250),
+    // Sized to the TOP of the range deliberately. Undershoot and the retry is a request spent on a
+    // provider that is still refusing, which is waste against the exact resource that is scarce;
+    // overshoot and the cost is idle milliseconds on a rare event. The ladder doubles from here
+    // (0.5s, 1s, 2s, 4s, 8s, 16s, all inside the 45s hold), so a genuinely window-shaped limit is
+    // still reached in a few cheap attempts, and Retry-After beats any schedule we could invent.
+    //
+    // STOP RE-TUNING THIS unless a probe reports something an order of magnitude larger. Three
+    // releases cut it on better evidence each time, which was right; a fourth cut chasing a 250ms
+    // sample would be fitting to noise, and the doubling ladder is what absorbs the variance.
+    //
+    // What both runs agree on matters more than the wait: the refusal lands on a COLD process with
+    // one or two requests behind it (the first request in one run, the second in the other). A limit
+    // our own rate could trip cannot behave that way. It is a single-provider model's shared capacity
+    // saying "not right now", which is why every remedy shaped like "ask more slowly" is off below.
+    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 500),
     // Self-pacing after a 429: OFF by default as of 1.3.1, and the default is the whole decision.
     //
     // The mechanism assumed a 429 proves "the account cannot take requests at this rate", which only

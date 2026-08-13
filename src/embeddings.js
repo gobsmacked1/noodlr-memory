@@ -45,7 +45,7 @@ export function resolveEmbedConfig(reqEmbed = {}) {
     // likely to be noticed. See EMBED_RATE_LIMIT_WAIT_MS and EMBED_PACE_MAX_MS there for the whys.
     rateLimitWaitMs: Number.isFinite(Number(reqEmbed.rateLimitWaitMs))
       ? Number(reqEmbed.rateLimitWaitMs)
-      : (d.rateLimitWaitMs ?? 250),
+      : (d.rateLimitWaitMs ?? 500),
     paceStepMs: Number.isFinite(Number(reqEmbed.paceStepMs))
       ? Number(reqEmbed.paceStepMs)
       : (d.paceStepMs ?? 1000),
@@ -501,10 +501,10 @@ async function embedBatchHedged(endpoint, cfg, batch) {
         : limited
           ? // A reset header, when the provider sent one, beats any schedule we could invent.
             // Otherwise DOUBLE from the MEASURED scale of a momentary refusal (see rateLimitWaitMs):
-            // 250ms, 0.5s, 1s, 2s, 4s, 8s, 16s, all inside the 45s hold. Probing the short wait first
-            // is what the evidence asks for — the measured refusal cleared on the first 250ms retry —
-            // and doubling still reaches a genuinely long wait within the same hold if this one turns
-            // out to be a real window rather than a blip. Jitter is proportional rather than a flat
+            // 0.5s, 1s, 2s, 4s, 8s, 16s, all inside the 45s hold. Probing a short wait first is what
+            // the evidence asks for — two probe runs saw the refusal clear 250ms and 500ms after it
+            // arrived — and doubling still reaches a genuinely long wait within the same hold if this
+            // one turns out to be a real window rather than a blip. Jitter is proportional rather than a flat
             // second: the gate already serialises this process, so it only exists to de-correlate
             // several services sharing one key, and a flat term would dominate the short waits.
             err.resetWaitMs ||

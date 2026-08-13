@@ -15,7 +15,7 @@ Vector Storage (Data Bank) and VectFox.
   - a **local OpenAI-compatible server** (`custom`): Ollama, vLLM, llama.cpp, LM Studio,
   - **fully in-process** (`transformers`): Transformers.js runs the model inside this
     service with no external server or key (optional `@huggingface/transformers` dep).
-  Keys can live server-side in `.env` or be supplied per-request by the module.
+    Keys can live server-side in `.env` or be supplied per-request by the module.
 - Stores vectors in a **pluggable backend**: `chroma` (default), `qdrant`, or
   `vectra` (file-based, zero external service).
 - Splits memory into independent **collections** by purpose, each resettable on
@@ -31,7 +31,7 @@ Vector Storage (Data Bank) and VectFox.
   `entities`, `keywords`, `event_type`, and `ts` metadata; events are stored
   atomically and their fields drive the re-ranker.
 - **Never pays to embed the same chunk twice.** `/ingest` and `/ingest-file` drop
-  chunks the collection already holds and repeats within one request *before*
+  chunks the collection already holds and repeats within one request _before_
   embedding, and report them as `skipped` / `alreadyStored` / `repeats`. So
   re-ingesting a compendium after adding one book costs only the new material,
   and an interrupted run can simply be started again.
@@ -102,7 +102,7 @@ A rate limit counts **requests**, not texts, so the levers in order of effect:
 2. `EMBED_HEDGE_MS=0` for bulk work. Hedging is an interactive-latency trick and
    only ever fires for a **single** text now; a duplicate request is another
    request against the same limit.
-3. `EMBED_MIN_INTERVAL_MS` — a deliberate floor. A refusal costs the wait *and*
+3. `EMBED_MIN_INTERVAL_MS` — a deliberate floor. A refusal costs the wait _and_
    the request, so going slowly on purpose finishes sooner than being refused.
 4. `EMBED_PROVIDER=transformers` embeds in-process, with no limit at all.
 
@@ -112,15 +112,17 @@ remedies: OpenRouter's own cap on your key (fixable with credits, or by leaving 
 is often not about your rate at all — the log reports how many providers serve the
 model, and where that is **one**, OpenRouter cannot route around a busy provider,
 so a single request can be refused seconds after an identical one succeeded. Change
-model or embed locally; pacing will not help. Measured on a single-provider model,
-the **first** request out of a cold process was refused and cleared 250ms later —
-a limit your rate could trip cannot do that. Hence `EMBED_PACE_MAX_MS` defaults to
-0 (no self-pacing after a 429), the first wait is 250ms rather than 20s, and a
+model or embed locally; pacing will not help. Measured twice on a single-provider
+model, the refusal landed within the first two requests of a **cold** process and
+cleared 250ms later in one run, 500ms in the other — a limit your own rate could
+trip cannot do that. Hence `EMBED_PACE_MAX_MS` defaults to 0 (no self-pacing after
+a 429), the first wait is 500ms rather than 20s and doubles from there, and a
 refusal the service retries away is logged at `info` rather than as a warning.
 
 **`node scripts/probe-rate.mjs`** measures what your provider actually tolerates,
 talking to it directly with every retry, hedge and pace bypassed: `sweep`, `recover`,
-`batch`, `routing`.
+`batch`, `routing`. Run `recover` a few times before changing any wait — it moved by
+2x between runs on one host, so a single sample is not a number to tune to.
 
 All requests require the `x-noodlr-secret` header when `NOODLR_MEMORY_SECRET`
 is set.

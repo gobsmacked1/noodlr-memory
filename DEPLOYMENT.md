@@ -47,7 +47,7 @@ sudo -u noodlr npm install pdf-parse             # if you import PDFs
 ```
 
 > **Do not use `--omit=optional`.** LanceDB's compiled binary ships as a platform-specific
-> *optional* dependency (the same pattern as esbuild/sharp), so omitting optionals removes the
+> _optional_ dependency (the same pattern as esbuild/sharp), so omitting optionals removes the
 > native module and LanceDB won't load. `--omit=dev` is correct. Any `onnxruntime-node`/`sharp`
 > install-script warnings are harmless unless you use the in-process `transformers` embedder.
 
@@ -317,8 +317,8 @@ scripts. Add `NOODLR_MEMORY_PORT=0` if you want the socket to be the only way in
    ```
 
 4. In the module's **Memory Configuration** window set **How to reach the memory service** to
-   *Behind the Foundry server* and the path to `/memory`. The module resolves it against Foundry's
-   own origin, so the request is same-origin and inherits your TLS. (The older *Direct URL* option
+   _Behind the Foundry server_ and the path to `/memory`. The module resolves it against Foundry's
+   own origin, so the request is same-origin and inherits your TLS. (The older _Direct URL_ option
    still works: `https://endless.secretdoor.app/memory`, no trailing slash.) Verify from anywhere:
 
    ```bash
@@ -375,7 +375,7 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
 - **`embedding provider 429`** — something refused the embedding request. The service retries it away:
-  the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (**250ms** as of v1.3.2, doubling on each further
+  the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (**500ms** as of v1.3.3, doubling on each further
   refusal) and honours `Retry-After` or `X-RateLimit-Reset` when the provider sends one. The pause is
   process-wide and hedging stands down for a few seconds.
   **A refusal the service recovers from is logged at `info` and nothing else happens** — the request
@@ -399,26 +399,30 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
     caused by anyone's traffic — reaches you as a 429 however slowly you ask. A single-text request
     being refused seconds after an identical one succeeded is this, not your pacing. The levers are a
     different model, or embedding locally.
-  **Measure it rather than inferring it: `node scripts/probe-rate.mjs`** talks to the provider
-  directly, bypassing every retry, hedge and pace in the service (they exist to hide the behaviour
-  being measured). `sweep` finds the gap at which refusals stop, `recover` measures how long one
-  actually lasts — which is what `EMBED_RATE_LIMIT_WAIT_MS` should be sized to — `batch` shows one
-  request of N against N of one, and `routing` lists the model's providers. Run it with the service's
-  own environment:
-  `cd /opt/noodlr-memory && set -a && . ./.env && set +a && node scripts/probe-rate.mjs sweep`
-  On the reference host (`perplexity/pplx-embed-v1-4b`, one provider) `recover` refused the **first**
-  request out of a cold process and cleared 250ms later. Both halves are worth knowing: a limit your
-  request rate could trip cannot refuse your first call, and a refusal that clears in a quarter of a
-  second needs a retry rather than a policy.
-  Since v1.2.1 the service holds one HTTP request open for at most `EMBED_RATE_LIMIT_BUDGET_MS`
-  (**45s**) before handing the 429 back and letting the caller wait. That is deliberate and replaces a
-  10-minute hold: the caller is the side with a progress bar, a cancel button and a resume index, so a
-  service that disappears for ten minutes mid-request makes a working ingest look hung and risks being
-  cut off by a reverse proxy first (keep this value under your `proxy_read_timeout`). The pacing
-  survives the hand-back, so the caller's retry does not arrive at full speed.
-  If it still fails, in order of effect:
+    **Measure it rather than inferring it: `node scripts/probe-rate.mjs`** talks to the provider
+    directly, bypassing every retry, hedge and pace in the service (they exist to hide the behaviour
+    being measured). `sweep` finds the gap at which refusals stop, `recover` measures how long one
+    actually lasts — the scale `EMBED_RATE_LIMIT_WAIT_MS` should be sized to — `batch` shows one
+    request of N against N of one, and `routing` lists the model's providers. Run it with the service's
+    own environment:
+    `cd /opt/noodlr-memory && set -a && . ./.env && set +a && node scripts/probe-rate.mjs sweep`
+    **Run `recover` more than once.** On the reference host (`perplexity/pplx-embed-v1-4b`, one
+    provider) two runs disagreed: the first refused the very first request of a cold process and cleared
+    250ms later; the second succeeded once, was refused on request two, was still refused at 250ms and
+    cleared at 500ms. What they agree on is the useful part — a refusal arrives within the first couple
+    of requests from a cold process, which no limit your own rate could trip would do, and it clears in
+    well under a second, which needs a retry rather than a policy. The exact figure is that provider's
+    momentary saturation, so **do not re-tune the wait to match the newest run**; the ladder doubles and
+    only needs the right order of magnitude.
+    Since v1.2.1 the service holds one HTTP request open for at most `EMBED_RATE_LIMIT_BUDGET_MS`
+    (**45s**) before handing the 429 back and letting the caller wait. That is deliberate and replaces a
+    10-minute hold: the caller is the side with a progress bar, a cancel button and a resume index, so a
+    service that disappears for ten minutes mid-request makes a working ingest look hung and risks being
+    cut off by a reverse proxy first (keep this value under your `proxy_read_timeout`). The pacing
+    survives the hand-back, so the caller's retry does not arrive at full speed.
+    If it still fails, in order of effect:
   0. **Check you are not re-paying for work already done.** Since v1.3.0 `/ingest` drops chunks the
-     collection already holds, and repeats inside one request, *before* embedding — reported as
+     collection already holds, and repeats inside one request, _before_ embedding — reported as
      `skipped` / `alreadyStored` / `repeats` in the response, and as "already stored" in the module's
      queue. A re-ingest after adding one book costs only the new material, so a run that reports
      nothing but skips is finished rather than broken. This needs no configuration; it is listed here
@@ -431,7 +435,7 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
   2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min, 6000 ≈ 10/min) —
      but only for an `[account limit]`, and preferably one `probe-rate.mjs sweep` has confirmed. A
      whole rulebook corpus is only one to two thousand requests at `EMBED_BATCH_SIZE=64`, so even
-     10/min finishes overnight, and a refusal costs the wait *and* the request. Pacing does nothing
+     10/min finishes overnight, and a refusal costs the wait _and_ the request. Pacing does nothing
      for an `[upstream limit]`, which is why it is no longer applied automatically.
      Since v1.3.0 hedging only ever fires for a **single** text, so a bulk batch is never duplicated
      and `EMBED_HEDGE_MS=0` matters much less than it did; set it anyway for a long bulk run if the
@@ -447,11 +451,11 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
      `List` instead of a searchable `FixedSizeList<Float32,N>`. Fresh tables created by the current
      build are correct, so purge lets the silo be recreated properly.
   2. **Embedding-dimension mismatch** — the silo was first written with a different embedding model.
-  As of the current build the failure is logged with the table's actual vector type, e.g.
-  `journalctl -u noodlr-memory -o cat -n 10` → `lancedb vectorSearch failed on "noodlr_docs"
-  (query dim=1024) [table 'vector' type: List<Float32>]: ...`. `List<...>` ⇒ cause #1; a dim
-  number that differs from the model's output ⇒ cause #2. Purge the silo (`node scripts/seed.mjs
-  purge`, or `purge-all` to reset every silo) and re-ingest with one consistent embedding model.
+     As of the current build the failure is logged with the table's actual vector type, e.g.
+     `journalctl -u noodlr-memory -o cat -n 10` → `lancedb vectorSearch failed on "noodlr_docs"
+(query dim=1024) [table 'vector' type: List<Float32>]: ...`. `List<...>` ⇒ cause #1; a dim
+     number that differs from the model's output ⇒ cause #2. Purge the silo (`node scripts/seed.mjs
+purge`, or `purge-all` to reset every silo) and re-ingest with one consistent embedding model.
 
 ### Diagnostic / seed tool (`scripts/seed.mjs`)
 
