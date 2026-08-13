@@ -68,9 +68,11 @@ export const config = {
     baseUrl: str("EMBED_BASE_URL", ""),
     apiKey: str("EMBED_API_KEY", ""),
     // A requests-per-minute limit counts REQUESTS, not texts, so this is the first and largest
-    // lever against one: 16 -> 32 halves the calls for identical work. Capped by
-    // maxCharsPerRequest below, so raising it cannot produce a body the provider rejects for length.
-    batchSize: num("EMBED_BATCH_SIZE", 32),
+    // lever against one: each doubling halves the calls for identical work, and 16 -> 64 is a
+    // straight quarter. Capped by maxCharsPerRequest below, so raising it cannot produce a body the
+    // provider rejects for length -- which is what makes the advice safe to follow rather than a
+    // trade of one failure for another.
+    batchSize: num("EMBED_BATCH_SIZE", 64),
     // Split a batch that would exceed this many characters, whatever batchSize says. ~48k chars is
     // roughly 12k tokens, comfortably inside every embedding endpoint's per-request budget.
     maxCharsPerRequest: num("EMBED_MAX_CHARS_PER_REQUEST", 48000),

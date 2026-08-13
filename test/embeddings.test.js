@@ -297,6 +297,62 @@ test("X-RateLimit-Reset is used as the wait when there is no Retry-After", async
   );
 });
 
+test("identical texts are embedded once and the vector is shared", async () => {
+  // The corpus miner's largest efficiency, missing here: system content is templated, so one trait's
+  // wording is shared by hundreds of creatures. Paying per copy bought nothing, because a store row
+  // is identified by the hash of its text and the copies were always going to be one row.
+  const calls = stubProvider();
+  const texts = ["pack tactics", "bite", "pack tactics", "pack tactics", "claw"];
+  const vecs = await embedTexts(texts, { ...cfg, batchSize: 50 });
+
+  assert.equal(vecs.length, texts.length, "every input still gets a vector");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].size, 3, "three distinct wordings, not five texts");
+  assert.deepEqual(vecs[0], vecs[2]);
+  assert.deepEqual(vecs[0], vecs[3]);
+});
+
+test("deduplication is by exact text, never by the 32-bit hash", async () => {
+  // contentHash is FNV-1a/32, and at corpus scale the birthday bound makes a collision near-certain.
+  // Keying on it here would hand one chunk another chunk's vector -- silently, and undetectably from
+  // the outside. Two texts differing only in case must be two requests' worth of work.
+  const calls = stubProvider();
+  await embedTexts(["Fireball", "fireball", "FIREBALL"], {
+    ...cfg,
+    batchSize: 50,
+  });
+  assert.equal(calls[0].size, 3);
+});
+
+test("a bulk batch is never hedged, however slow the provider gets", async () => {
+  // The amplifier that was live at stock settings. A hedge fires when a request is SLOW, which is
+  // precisely what a throttled provider is, so it doubled the request rate through the whole run up
+  // to the first refusal -- making it a plausible cause of that refusal rather than a reaction to it.
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const input = JSON.parse(init.body).input;
+    await new Promise((r) => setTimeout(r, 120));
+    return new Response(
+      JSON.stringify({
+        data: input.map((_, index) => ({ index, embedding: [0.5, 0.5] })),
+      }),
+      { status: 200 },
+    );
+  };
+
+  await embedTexts(["a", "b"], { ...cfg, hedgeMs: 20, batchSize: 50 });
+  assert.equal(calls, 1, "two texts is bulk work; nobody is waiting on it");
+
+  calls = 0;
+  await embedTexts(["only one"], { ...cfg, hedgeMs: 20 });
+  assert.equal(
+    calls,
+    2,
+    "a single text is a query embed, where the duplicate earns its cost",
+  );
+});
+
 test("a 401 is not retried, because it will never pass", async () => {
   let calls = 0;
   globalThis.fetch = async () => {

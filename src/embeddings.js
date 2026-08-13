@@ -24,7 +24,7 @@ export function resolveEmbedConfig(reqEmbed = {}) {
       1,
       Math.min(
         256,
-        Math.round(Number(reqEmbed.batchSize) || d.batchSize || 32),
+        Math.round(Number(reqEmbed.batchSize) || d.batchSize || 64),
       ),
     ),
     maxCharsPerRequest:
@@ -319,7 +319,9 @@ async function postEmbeddings(endpoint, cfg, batch, signal) {
  * is a latency trick that assumes a healthy provider with an unlucky connection. A rate-limited
  * provider is neither: requests get SLOW, which is exactly the condition that fires the hedge, so it
  * doubles the request rate at the moment the account can least afford it. It stands down for a
- * minute after any 429 and comes back on its own.
+ * minute after any 429 and comes back on its own -- but that is a reaction, and by then the hedge has
+ * been doubling the rate for the whole run up to the first refusal, so it is a plausible CAUSE of
+ * that refusal rather than merely an aggravator. Hence the batch-size gate in `once`.
  */
 async function embedBatchHedged(endpoint, cfg, batch) {
   if (cfg.provider === "mock") return batch.map(mockEmbed);
@@ -336,8 +338,15 @@ async function embedBatchHedged(endpoint, cfg, batch) {
     );
   };
 
+  // Hedge a SINGLE text and nothing larger. One text is a query embed, where a stalled request costs
+  // somebody staring at a chat panel and a duplicate is worth the second call. A batch is bulk work
+  // out of an ingest queue: nobody is waiting on any individual batch, so the duplicate buys nothing
+  // at all and costs another request against a limit that counts requests. Gating on the batch size
+  // rather than adding a setting means an operator cannot get it wrong and does not have to find it.
+  const bulk = batch.length > 1;
+
   const once = () => {
-    if (!cfg.hedgeMs || cfg.hedgeMs <= 0 || rateLimited()) return attempt();
+    if (!cfg.hedgeMs || cfg.hedgeMs <= 0 || bulk || rateLimited()) return attempt();
     const first = attempt();
     let hedgeTimer;
     const hedge = new Promise((resolve, reject) => {
@@ -496,6 +505,37 @@ export function planBatches(texts, cfg) {
 }
 
 /**
+ * Group identical texts so each distinct wording is embedded once.
+ *
+ * The corpus miner's largest single efficiency was this and nothing cleverer: 4,661 SRD features
+ * reduced to 1,387 distinct wordings, one trait's text shared by 270 creatures, because system
+ * content is templated rather than written out per creature. Paying for that redundancy buys
+ * literally nothing here -- a vector store row is identified by the hash of its text, so identical
+ * chunks were always going to be one row.
+ *
+ * Keyed on the exact string, never on `contentHash`: that is a 32-bit FNV-1a, and at corpus scale the
+ * birthday bound makes a collision near-certain, so hashing here would eventually hand one chunk
+ * another chunk's vector -- silently, and undetectably from the outside.
+ * @returns {{unique: string[], slotOf: number[]}} texts to embed, and which of them each input wants
+ */
+export function groupIdentical(texts) {
+  const slotFor = new Map();
+  const unique = [];
+  const slotOf = new Array(texts.length);
+  for (let i = 0; i < texts.length; i++) {
+    const t = String(texts[i] ?? "");
+    let slot = slotFor.get(t);
+    if (slot === undefined) {
+      slot = unique.length;
+      slotFor.set(t, slot);
+      unique.push(texts[i]);
+    }
+    slotOf[i] = slot;
+  }
+  return { unique, slotOf };
+}
+
+/**
  * Embed an array of texts. Batches by cfg.batchSize; on a batch failure, retries
  * that batch one item at a time so a single bad/stuck item can't sink the run.
  * @returns {Promise<number[][]>}
@@ -508,9 +548,17 @@ export async function embedTexts(texts, reqEmbed) {
     throw new HttpError(400, "embedding model is required");
   }
   const endpoint = endpointFor(cfg);
-  const out = new Array(texts.length);
-  for (const idxs of planBatches(texts, cfg)) {
-    const batch = idxs.map((i) => texts[i]);
+
+  const { unique, slotOf } = groupIdentical(texts);
+  if (unique.length < texts.length) {
+    log.info(
+      `embed: ${texts.length} texts are ${unique.length} distinct wordings (${texts.length - unique.length} reused)`,
+    );
+  }
+
+  const out = new Array(unique.length);
+  for (const idxs of planBatches(unique, cfg)) {
+    const batch = idxs.map((i) => unique[i]);
     try {
       const vecs = await embedBatchHedged(endpoint, cfg, batch);
       idxs.forEach((idx, k) => (out[idx] = vecs[k]));
@@ -530,5 +578,7 @@ export async function embedTexts(texts, reqEmbed) {
     }
   }
   assertValidVectors(out, cfg.model || cfg.provider);
-  return out;
+  // Duplicate slots share the vector object rather than copying it. Nothing downstream mutates a
+  // vector, and a copy would mean another few thousand floats per repeat for no benefit.
+  return slotOf.map((slot) => out[slot]);
 }

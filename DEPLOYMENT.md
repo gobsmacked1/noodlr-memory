@@ -396,17 +396,26 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
   cut off by a reverse proxy first (keep this value under your `proxy_read_timeout`). The pacing
   survives the hand-back, so the caller's retry does not arrive at full speed.
   If it still fails, in order of effect:
-  1. **Raise `EMBED_BATCH_SIZE`** (32 → 64). A rate limit counts requests, not texts, so this is a
-     straight halving of calls for the same work. `EMBED_MAX_CHARS_PER_REQUEST` splits any batch that
-     would get too long, so raising it cannot produce an oversized body. Try this first.
+  0. **Check you are not re-paying for work already done.** Since v1.3.0 `/ingest` drops chunks the
+     collection already holds, and repeats inside one request, *before* embedding — reported as
+     `skipped` / `alreadyStored` / `repeats` in the response, and as "already stored" in the module's
+     queue. A re-ingest after adding one book costs only the new material, so a run that reports
+     nothing but skips is finished rather than broken. This needs no configuration; it is listed here
+     because "it rate-limited on the second attempt" is usually the second attempt embedding the
+     first attempt's work again.
+  1. **Raise `EMBED_BATCH_SIZE`** (now 64 by default; 16 → 64 is a straight quarter of the calls for
+     identical work). A rate limit counts requests, not texts.
+     `EMBED_MAX_CHARS_PER_REQUEST` splits any batch that would get too long, so raising it cannot
+     produce an oversized body. Try this first.
   2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min, 6000 ≈ 10/min);
      the adaptive pacing above only learns after the first refusal, and its ceiling
      (`EMBED_PACE_MAX_MS`, 30s) is a runaway guard rather than a target. A whole rulebook corpus is
      only one to two thousand requests at `EMBED_BATCH_SIZE=64`, so even 10/min finishes overnight —
      for a one-off bulk load, pacing deliberately is far cheaper in wall-clock terms than being
      refused, since a refusal costs the wait *and* the request.
-     Also set **`EMBED_HEDGE_MS=0`** for a bulk run: hedging is a latency trick for interactive
-     queries and every duplicate it fires is another request against the same limit.
+     Since v1.3.0 hedging only ever fires for a **single** text, so a bulk batch is never duplicated
+     and `EMBED_HEDGE_MS=0` matters much less than it did; set it anyway for a long bulk run if the
+     provider is already refusing.
   3. **Ingest locally.** `EMBED_PROVIDER=transformers` embeds in-process with no network, no key and
      no limit — a good fit for a one-off bulk load of rulebooks. It changes the vector space, so
      **every collection must then use it**: switch only right after a full reset, never partway

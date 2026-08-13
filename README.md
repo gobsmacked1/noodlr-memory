@@ -30,6 +30,11 @@ Vector Storage (Data Bank) and VectFox.
 - Accepts **structured events** (`kind: "event"`) that carry `importance`,
   `entities`, `keywords`, `event_type`, and `ts` metadata; events are stored
   atomically and their fields drive the re-ranker.
+- **Never pays to embed the same chunk twice.** `/ingest` and `/ingest-file` drop
+  chunks the collection already holds and repeats within one request *before*
+  embedding, and report them as `skipped` / `alreadyStored` / `repeats`. So
+  re-ingesting a compendium after adding one book costs only the new material,
+  and an interrupted run can simply be started again.
 
 ## Requirements
 
@@ -68,8 +73,13 @@ VECTOR_BACKEND=vectra EMBED_PROVIDER=openrouter EMBED_API_KEY=sk-or-... npm star
 - `GET /v1/health` -> `{ ok, backend }`
 - `GET /v1/collections` -> `{ collections, stats }`
 - `POST /v1/ingest` `{ collection, documents:[{text, kind?, metadata?}], embed?, chunk? }`
-  - chunks -> embeds -> upserts. `kind:"table"` documents are stored atomically.
+  - chunks -> skips what is already stored -> embeds -> upserts. `kind:"table"`
+    documents are stored atomically.
+  - -> `{ inserted, chunks, skipped, alreadyStored, repeats }`
 - `POST /v1/insert` `{ collection, items:[{text, metadata?}], embed? }` (pre-chunked)
+  - deliberately does **not** skip stored hashes: this is the path a memory is
+    retracted or edited through, so a re-write of identical text with new metadata
+    has to land.
 - `POST /v1/query` `{ collection | collections[], searchText, topK?, threshold?, hybrid?, weights?, embed? }`
   - `hybrid` (default `true`) enables dense+BM25 fusion + importance/recency re-rank; `false` = pure dense.
   - `weights` (optional): `{ cosine, bm25, importance, recency }` to tune the re-ranker.
@@ -78,7 +88,27 @@ VECTOR_BACKEND=vectra EMBED_PROVIDER=openrouter EMBED_API_KEY=sk-or-... npm star
 - `POST /v1/purge` `{ collection }` / `POST /v1/purge-all`
 
 `embed` (optional per request) overrides `.env` defaults:
-`{ provider:"openrouter"|"custom"|"mock", model, baseUrl, apiKey }`.
+`{ provider:"openrouter"|"custom"|"mock", model, baseUrl, apiKey, batchSize, minIntervalMs }`.
+The last two are not credentials, so the module sends them whether or not the GM
+has opted into sharing a provider block.
+
+### If a provider rate-limits you
+
+A rate limit counts **requests**, not texts, so the levers in order of effect:
+
+1. `EMBED_BATCH_SIZE` (default 64) — the same corpus in a quarter of the requests
+   at 16 -> 64. `EMBED_MAX_CHARS_PER_REQUEST` splits an over-long batch so raising
+   this cannot start producing payloads a provider rejects.
+2. `EMBED_HEDGE_MS=0` for bulk work. Hedging is an interactive-latency trick and
+   only ever fires for a **single** text now; a duplicate request is another
+   request against the same limit.
+3. `EMBED_MIN_INTERVAL_MS` — a deliberate floor. A refusal costs the wait *and*
+   the request, so going slowly on purpose finishes sooner than being refused.
+4. `EMBED_PROVIDER=transformers` embeds in-process, with no limit at all.
+
+A 429 is logged with **which** limiter refused: OpenRouter's own cap on your key
+(fixable with credits, or by leaving a `:free` model) or an upstream provider's
+capacity relayed through it (credits change nothing — slow down or change model).
 
 All requests require the `x-noodlr-secret` header when `NOODLR_MEMORY_SECRET`
 is set.
