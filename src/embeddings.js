@@ -16,12 +16,27 @@ export function resolveEmbedConfig(reqEmbed = {}) {
     model: String(reqEmbed.model || d.model || "").trim(),
     baseUrl: String(reqEmbed.baseUrl || d.baseUrl || "").trim(),
     apiKey: String(reqEmbed.apiKey || d.apiKey || "").trim(),
-    batchSize: Number(reqEmbed.batchSize) || d.batchSize || 16,
+    // Clamped because it arrives from a browser form: a zero would divide the work into empty
+    // batches forever and a five-figure value would be rejected by the provider on length.
+    batchSize: Math.max(1, Math.min(256, Math.round(Number(reqEmbed.batchSize) || d.batchSize || 32))),
+    maxCharsPerRequest: Number(reqEmbed.maxCharsPerRequest) || d.maxCharsPerRequest || 48000,
     hedgeMs: Number.isFinite(Number(reqEmbed.hedgeMs)) ? Number(reqEmbed.hedgeMs) : d.hedgeMs,
     timeoutMs: Number(reqEmbed.timeoutMs) || d.timeoutMs || 60000,
     maxRetries: Number.isFinite(Number(reqEmbed.maxRetries))
       ? Number(reqEmbed.maxRetries)
       : (d.maxRetries ?? 5),
+    rateLimitBudgetMs: Number.isFinite(Number(reqEmbed.rateLimitBudgetMs))
+      ? Number(reqEmbed.rateLimitBudgetMs)
+      : (d.rateLimitBudgetMs ?? 600_000),
+    rateLimitWaitMs: Number.isFinite(Number(reqEmbed.rateLimitWaitMs))
+      ? Number(reqEmbed.rateLimitWaitMs)
+      : (d.rateLimitWaitMs ?? 20_000),
+    paceStepMs: Number.isFinite(Number(reqEmbed.paceStepMs))
+      ? Number(reqEmbed.paceStepMs)
+      : (d.paceStepMs ?? 1000),
+    paceMaxMs: Number.isFinite(Number(reqEmbed.paceMaxMs))
+      ? Number(reqEmbed.paceMaxMs)
+      : (d.paceMaxMs ?? 6000),
     // A floor on the gap between requests, for an account whose limit is low enough that backoff
     // alone means backing off constantly. Off by default: the retry gate is the correct mechanism,
     // and pacing every request to suit the worst case makes a healthy key needlessly slow.
@@ -102,6 +117,23 @@ let pausedUntil = 0;
 let lastRateLimitAt = 0;
 /** Earliest the next request may leave, for the optional fixed pacing. */
 let nextSlotAt = 0;
+/**
+ * Pacing the service taught itself from a 429, on top of any configured floor.
+ *
+ * Waiting out a rate limit and then resuming at full speed walks into the same wall on the next
+ * window, so a long run becomes stall, burst, stall for as long as it lasts -- which is what made a
+ * compendium ingest look unfinishable even though every individual retry was working. One 429 is
+ * proof the account cannot take requests at this rate, so the rate comes down and stays down until
+ * a quiet stretch says otherwise.
+ */
+let adaptivePaceMs = 0;
+/** How long without a refusal before the learned pacing is given up. */
+const PACE_DECAY_MS = 300_000;
+
+function paceInterval(cfg) {
+  if (adaptivePaceMs > 0 && Date.now() - lastRateLimitAt > PACE_DECAY_MS) adaptivePaceMs = 0;
+  return Math.max(cfg.minIntervalMs || 0, adaptivePaceMs);
+}
 
 async function awaitGate() {
   for (;;) {
@@ -111,9 +143,14 @@ async function awaitGate() {
   }
 }
 
-function pauseAll(ms) {
+function pauseAll(ms, cfg) {
   pausedUntil = Math.max(pausedUntil, Date.now() + ms);
   lastRateLimitAt = Date.now();
+  const step = cfg?.paceStepMs ?? 0;
+  if (step > 0) {
+    const next = adaptivePaceMs > 0 ? adaptivePaceMs * 2 : step;
+    adaptivePaceMs = Math.min(cfg.paceMaxMs ?? 6000, next);
+  }
 }
 
 /** Test seam: forget any pause, so one test's rate limit does not leak into the next. */
@@ -121,6 +158,16 @@ export function resetRateLimitGate() {
   pausedUntil = 0;
   lastRateLimitAt = 0;
   nextSlotAt = 0;
+  adaptivePaceMs = 0;
+}
+
+/** What the gate currently believes, for the diagnostics report. */
+export function rateLimitState() {
+  return {
+    pausedForMs: Math.max(0, pausedUntil - Date.now()),
+    pacingMs: adaptivePaceMs,
+    lastRateLimitAt: lastRateLimitAt || null,
+  };
 }
 
 /** True while a 429 is recent enough that a second concurrent request would only make it worse. */
@@ -143,8 +190,11 @@ async function postEmbeddings(endpoint, cfg, batch, signal) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
+    // The status is passed through for 429 rather than flattened to 400, so a caller can tell "the
+    // account is over its limit, try later" from "you are asking wrongly" without reading the
+    // message. The module's ingest loop keys its own patience off exactly this.
     const err = new HttpError(
-      res.status >= 500 ? 502 : 400,
+      res.status === 429 ? 429 : res.status >= 500 ? 502 : 400,
       `embedding provider ${res.status}: ${body.slice(0, 300)}`,
     );
     // 429 is rate limiting and 5xx is the provider having a moment; both pass with time. Everything
@@ -179,7 +229,8 @@ async function embedBatchHedged(endpoint, cfg, batch) {
   const attempt = () => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), cfg.timeoutMs);
-    if (cfg.minIntervalMs > 0) nextSlotAt = Date.now() + cfg.minIntervalMs;
+    const gap = paceInterval(cfg);
+    if (gap > 0) nextSlotAt = Date.now() + gap;
     return postEmbeddings(endpoint, cfg, batch, ac.signal).finally(() => clearTimeout(timer));
   };
 
@@ -194,6 +245,15 @@ async function embedBatchHedged(endpoint, cfg, batch) {
   };
 
   let tries = 0;
+  // Counted separately from `tries` because the two failures need different patience, in different
+  // units. A timeout or a dropped connection is one request's bad luck and a handful of attempts
+  // settles it; a rate limit is a property of the account for the next minute or more, so what
+  // matters is how long we are willing to keep asking, not how many times.
+  // NOT named rateLimited: that is the module-level "has the account been refused lately" guard, and
+  // `once` closes over it. A local of the same name shadows it for the whole function and turns the
+  // hedge check into a call on a number -- which only shows up when hedging is on, i.e. in production.
+  let limitedTries = 0;
+  let spentOnRateLimit = 0;
   for (;;) {
     tries++;
     await awaitGate();
@@ -203,16 +263,37 @@ async function embedBatchHedged(endpoint, cfg, batch) {
       const isAbort = err?.name === "AbortError";
       // A TypeError from fetch is a dropped connection rather than a refusal, and passes with time.
       const retryable = isAbort || err?.retryable || err?.name === "TypeError";
-      if (!retryable || tries > cfg.maxRetries) throw err;
+      if (!retryable) throw err;
+
+      const limited = err?.providerStatus === 429;
+      if (limited) limitedTries++;
+      else if (tries > cfg.maxRetries) throw err;
+
       const wait = err?.retryAfter
         ? err.retryAfter * 1000
-        : Math.min(60_000, 2 ** tries * 1000) + Math.random() * 1000;
-      log.warn(
-        `embed retry ${tries}/${cfg.maxRetries} in ${Math.round(wait / 1000)}s: ${err.message}`,
-      );
-      // Only a rate limit is everyone's problem. Stalling every other request for one timeout would
-      // throw away throughput for nothing.
-      if (err?.providerStatus === 429) pauseAll(wait);
+        : limited
+          ? // Escalating from a wait long enough for a per-minute window to actually roll over.
+            // Jitter is proportional here rather than a flat second: the gate already serialises
+            // this process, so it only exists to de-correlate several services sharing one key,
+            // and a flat term would dominate the short waits a test or a fast limit uses.
+            Math.min(120_000, cfg.rateLimitWaitMs * limitedTries) * (1 + Math.random() * 0.1)
+          : Math.min(60_000, 2 ** tries * 1000) + Math.random() * 1000;
+
+      if (limited) {
+        if (spentOnRateLimit + wait > cfg.rateLimitBudgetMs) throw err;
+        spentOnRateLimit += wait;
+        log.warn(
+          `embed rate-limited, waiting ${Math.round(wait / 1000)}s ` +
+            `(${Math.round(spentOnRateLimit / 1000)}s of ${Math.round(cfg.rateLimitBudgetMs / 1000)}s patience spent): ${err.message}`,
+        );
+        // Only a rate limit is everyone's problem. Stalling every other request for one timeout
+        // would throw away throughput for nothing.
+        pauseAll(wait, cfg);
+      } else {
+        log.warn(
+          `embed retry ${tries}/${cfg.maxRetries} in ${Math.round(wait / 1000)}s: ${err.message}`,
+        );
+      }
       await sleep(wait);
     }
   }
@@ -254,6 +335,34 @@ function assertValidVectors(vectors, model) {
 }
 
 /**
+ * Group texts into requests: at most `batchSize` items and at most `maxCharsPerRequest` characters.
+ *
+ * The character cap is what makes the batch size safe to raise. Requests are the scarce resource
+ * against a per-minute limit, so a bigger batch is the strongest lever there is -- but the same
+ * change can push one request past the provider's own length limit, and a 400 on every batch is a
+ * worse failure than a slow run. An item longer than the cap on its own is still sent alone: the
+ * provider's verdict on it is information, and silently dropping a document is not.
+ * @returns {number[][]} index groups, in order
+ */
+export function planBatches(texts, cfg) {
+  const groups = [];
+  let current = [];
+  let chars = 0;
+  for (let i = 0; i < texts.length; i++) {
+    const size = String(texts[i] ?? "").length;
+    if (current.length > 0 && (current.length >= cfg.batchSize || chars + size > cfg.maxCharsPerRequest)) {
+      groups.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(i);
+    chars += size;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/**
  * Embed an array of texts. Batches by cfg.batchSize; on a batch failure, retries
  * that batch one item at a time so a single bad/stuck item can't sink the run.
  * @returns {Promise<number[][]>}
@@ -266,13 +375,8 @@ export async function embedTexts(texts, reqEmbed) {
   }
   const endpoint = endpointFor(cfg);
   const out = new Array(texts.length);
-  for (let start = 0; start < texts.length; start += cfg.batchSize) {
-    const idxs = [];
-    const batch = [];
-    for (let i = start; i < Math.min(start + cfg.batchSize, texts.length); i++) {
-      idxs.push(i);
-      batch.push(texts[i]);
-    }
+  for (const idxs of planBatches(texts, cfg)) {
+    const batch = idxs.map((i) => texts[i]);
     try {
       const vecs = await embedBatchHedged(endpoint, cfg, batch);
       idxs.forEach((idx, k) => (out[idx] = vecs[k]));

@@ -67,12 +67,30 @@ export const config = {
     model: str("EMBED_MODEL", "perplexity/pplx-embed-v1-4b"),
     baseUrl: str("EMBED_BASE_URL", ""),
     apiKey: str("EMBED_API_KEY", ""),
-    batchSize: num("EMBED_BATCH_SIZE", 16),
+    // A requests-per-minute limit counts REQUESTS, not texts, so this is the first and largest
+    // lever against one: 16 -> 32 halves the calls for identical work. Capped by
+    // maxCharsPerRequest below, so raising it cannot produce a body the provider rejects for length.
+    batchSize: num("EMBED_BATCH_SIZE", 32),
+    // Split a batch that would exceed this many characters, whatever batchSize says. ~48k chars is
+    // roughly 12k tokens, comfortably inside every embedding endpoint's per-request budget.
+    maxCharsPerRequest: num("EMBED_MAX_CHARS_PER_REQUEST", 48000),
     hedgeMs: num("EMBED_HEDGE_MS", 15000),
     timeoutMs: num("EMBED_TIMEOUT_MS", 60000),
     maxRetries: num("EMBED_MAX_RETRIES", 5),
-    // Minimum gap between embedding requests, in ms. 0 = as fast as they complete. Raise it when a
-    // provider's limit is low enough that the retry gate spends more time waiting than working:
+    // How long to keep trying a RATE-LIMITED batch, in ms. Attempts are the wrong unit for a rate
+    // limit: five retries of exponential backoff from 2s spend themselves inside a single
+    // per-minute window and then give up, which is what made a compendium ingest unfinishable.
+    rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 600000),
+    // First wait after a 429 that carries no Retry-After. A per-minute window does not clear in two
+    // seconds, so starting small only burns the budget reaching the same answer.
+    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 20000),
+    // Once a 429 has arrived, the account demonstrably cannot take requests at full speed, so pace
+    // them from then on instead of bursting into the same wall every window. Doubles per rate limit,
+    // capped, and decays on its own. 0 disables the adaptation.
+    paceStepMs: num("EMBED_PACE_STEP_MS", 1000),
+    paceMaxMs: num("EMBED_PACE_MAX_MS", 6000),
+    // Minimum gap between embedding requests, in ms. 0 = as fast as they complete (with the
+    // adaptive pacing above as the safety net). Set it when a provider's limit is known and low:
     // 1200 is roughly 50 requests a minute.
     minIntervalMs: num("EMBED_MIN_INTERVAL_MS", 0),
   },
