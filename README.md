@@ -106,9 +106,18 @@ A rate limit counts **requests**, not texts, so the levers in order of effect:
    the request, so going slowly on purpose finishes sooner than being refused.
 4. `EMBED_PROVIDER=transformers` embeds in-process, with no limit at all.
 
-A 429 is logged with **which** limiter refused: OpenRouter's own cap on your key
-(fixable with credits, or by leaving a `:free` model) or an upstream provider's
-capacity relayed through it (credits change nothing — slow down or change model).
+A 429 is logged with **which** limiter refused, because the two have opposite
+remedies: OpenRouter's own cap on your key (fixable with credits, or by leaving a
+`:free` model), or an upstream provider's capacity relayed through it. The second
+is often not about your rate at all — the log reports how many providers serve the
+model, and where that is **one**, OpenRouter cannot route around a busy provider,
+so a single request can be refused seconds after an identical one succeeded. Change
+model or embed locally; pacing will not help. Hence `EMBED_PACE_MAX_MS` defaults to
+0 (no self-pacing after a 429) and the first wait is 1s rather than 20s.
+
+**`node scripts/probe-rate.mjs`** measures what your provider actually tolerates,
+talking to it directly with every retry, hedge and pace bypassed: `sweep`, `recover`,
+`batch`, `routing`.
 
 All requests require the `x-noodlr-secret` header when `NOODLR_MEMORY_SECRET`
 is set.

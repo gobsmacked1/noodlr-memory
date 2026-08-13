@@ -172,9 +172,12 @@ function pauseAll(ms, cfg) {
   pausedUntil = Math.max(pausedUntil, Date.now() + ms);
   lastRateLimitAt = Date.now();
   const step = cfg?.paceStepMs ?? 0;
-  if (step > 0) {
+  const max = cfg?.paceMaxMs ?? 0;
+  // Both have to be set for the adaptation to exist at all. It ships off (max 0) because a learned
+  // pace is only justified when the limit belongs to the key; see EMBED_PACE_MAX_MS in config.js.
+  if (step > 0 && max > 0) {
     const next = adaptivePaceMs > 0 ? adaptivePaceMs * 2 : step;
-    adaptivePaceMs = Math.min(cfg.paceMaxMs ?? 6000, next);
+    adaptivePaceMs = Math.min(max, next);
   }
 }
 
@@ -216,7 +219,7 @@ function rateLimited() {
  * Headers decide it where they exist because they are unambiguous; the nested-body shape is the
  * fallback. "unknown" carries no advice rather than a guess.
  */
-function limiterOf(res, body) {
+function limiterOf(res, body, batchSize = 0) {
   const limit = res.headers.get("x-ratelimit-limit");
   const remaining = res.headers.get("x-ratelimit-remaining");
   const reset = res.headers.get("x-ratelimit-reset");
@@ -238,16 +241,72 @@ function limiterOf(res, body) {
     .filter(Boolean)
     .join(", ");
 
+  // The remedy depends on how big the refused request was, and getting that wrong sends the operator
+  // to tune a knob that provably cannot help: ONE text is the smallest request that exists, so a
+  // refusal there is not about our rate and neither pacing nor batching has anywhere left to go.
+  const single = batchSize > 0 && batchSize <= 1;
   const advice =
     scope === "account"
       ? "this is OpenRouter's own limit on the key: buying credits raises a free-model cap, or move off the :free variant"
       : scope === "upstream"
         ? "this is the UPSTREAM provider refusing, relayed by OpenRouter — credits will not change it. " +
-          "Slow the request rate (EMBED_MIN_INTERVAL_MS), raise EMBED_BATCH_SIZE so the same work is fewer requests, " +
-          "or use a different embedding model. EMBED_PROVIDER=transformers embeds in-process with no limit at all."
+          (single
+            ? "This was a request for a SINGLE text, so the request rate is already as low as it goes: " +
+              "EMBED_MIN_INTERVAL_MS and EMBED_BATCH_SIZE cannot help, and the model itself has no " +
+              "capacity for you right now. Change EMBED_MODEL, or set EMBED_PROVIDER=transformers to " +
+              "embed in-process with no limit at all."
+            : "Raise EMBED_BATCH_SIZE so the same work is fewer requests, slow the request rate " +
+              "(EMBED_MIN_INTERVAL_MS), or use a different embedding model. " +
+              "EMBED_PROVIDER=transformers embeds in-process with no limit at all.")
         : "";
 
   return { scope, detail, advice, resetHeader: reset };
+}
+
+/**
+ * How many providers OpenRouter can route a model to, asked once, only after a refusal.
+ *
+ * This is the fact that explains a single-text 429, and no part of the response carries it: a model
+ * served by ONE provider gives OpenRouter nothing to fail over to, so that provider's saturation —
+ * by anyone's traffic, not only ours — arrives here as a refusal however slowly we ask. A model with
+ * two or three endpoints absorbs the same event invisibly. Without this line the operator reads
+ * "rate limit", reasonably concludes they are asking too fast, and tunes knobs that cannot move.
+ *
+ * Public catalogue, no key, best-effort and cached including the failure: a run that is already being
+ * refused must not turn into a second stream of requests, and an unreachable catalogue means we say
+ * nothing rather than guess.
+ */
+const routingNotes = new Map();
+
+async function routingNote(model) {
+  if (!model) return "";
+  if (routingNotes.has(model)) return routingNotes.get(model);
+  routingNotes.set(model, ""); // claim it first: a concurrent refusal must not ask twice
+  let note = "";
+  try {
+    const res = await fetch(
+      `https://openrouter.ai/api/v1/models/${encodeURIComponent(model).replace(/%2F/g, "/")}/endpoints`,
+      { signal: AbortSignal.timeout(5000) },
+    );
+    if (res.ok) {
+      const json = await res.json();
+      const eps = json?.data?.endpoints;
+      if (Array.isArray(eps) && eps.length > 0) {
+        const names = eps.map((e) => e.provider_name).filter(Boolean);
+        note =
+          eps.length === 1
+            ? `"${model}" is served by exactly ONE provider (${names[0] || "unknown"}), so OpenRouter has ` +
+              "nothing to fail over to and that provider's own saturation reaches you directly. A model " +
+              "with several providers absorbs this invisibly — see the embeddings list at " +
+              "https://openrouter.ai/models?fmt=table&output_modalities=embeddings"
+            : `"${model}" has ${eps.length} providers (${names.join(", ")}), so this refusal is not a routing dead end`;
+      }
+    }
+  } catch {
+    // Never worth reporting: this is colour on a failure that is already fully described.
+  }
+  routingNotes.set(model, note);
+  return note;
 }
 
 /** A wait implied by the reset header, in ms, or 0 when it says nothing usable. */
@@ -295,7 +354,9 @@ async function postEmbeddings(endpoint, cfg, batch, signal) {
     err.retryable = res.status === 429 || res.status >= 500;
     err.retryAfter = Number(res.headers.get("retry-after")) || 0;
     if (res.status === 429) {
-      const who = limiterOf(res, body);
+      const who = limiterOf(res, body, batch.length);
+      err.batchSize = batch.length;
+      err.model = cfg.model;
       err.limiter = who.scope;
       err.limiterDetail = who.detail;
       err.limiterAdvice = who.advice;
@@ -387,12 +448,15 @@ async function embedBatchHedged(endpoint, cfg, batch) {
         ? err.retryAfter * 1000
         : limited
           ? // A reset header, when the provider sent one, beats any schedule we could invent.
-            // Otherwise escalate from a wait long enough for a per-minute window to actually roll
-            // over. Jitter is proportional rather than a flat second: the gate already serialises
-            // this process, so it only exists to de-correlate several services sharing one key, and
-            // a flat term would dominate the short waits a test or a fast limit uses.
+            // Otherwise DOUBLE from the observed scale of a momentary refusal (see
+            // rateLimitWaitMs): 1s, 2s, 4s, 8s, 16s inside the hold. Probing the short wait first is
+            // what the evidence asks for — a provider seen serving one second earlier does not need
+            // twenty — and doubling still reaches a genuinely long wait quickly if this one is a real
+            // window rather than a blip. Jitter is proportional rather than a flat second: the gate
+            // already serialises this process, so it only exists to de-correlate several services
+            // sharing one key, and a flat term would dominate the short waits.
             err.resetWaitMs ||
-            Math.min(120_000, cfg.rateLimitWaitMs * limitedTries) *
+            Math.min(120_000, cfg.rateLimitWaitMs * 2 ** (limitedTries - 1)) *
               (1 + Math.random() * 0.1)
           : Math.min(60_000, 2 ** tries * 1000) + Math.random() * 1000;
 
@@ -403,7 +467,10 @@ async function embedBatchHedged(endpoint, cfg, batch) {
           pauseAll(wait, cfg);
           err.message +=
             ` — handing back after ${Math.round(spentOnRateLimit / 1000)}s so the caller can wait` +
-            ` visibly and resume; the service will stay paced at ${Math.round(adaptivePaceMs / 1000)}s between requests`;
+            ` visibly and resume` +
+            (adaptivePaceMs > 0
+              ? `; the service will stay paced at ${Math.round(adaptivePaceMs / 1000)}s between requests`
+              : "");
           throw err;
         }
         spentOnRateLimit += wait;
@@ -414,12 +481,21 @@ async function embedBatchHedged(endpoint, cfg, batch) {
           err.limiter === "unknown"
             ? ""
             : ` [${err.limiter} limit${err.limiterDetail ? `: ${err.limiterDetail}` : ""}]`;
+        // The model and the size are what make the advice checkable: a per-request override means the
+        // env default is not necessarily what was refused, and one text versus sixty-four is the
+        // difference between "ask more slowly" and "there is nothing left to slow down".
         log.warn(
-          `embed rate-limited${who}, waiting ${Math.round(wait / 1000)}s ` +
+          `embed rate-limited${who} on ${cfg.model} (${err.batchSize ?? batch.length} text${
+            (err.batchSize ?? batch.length) === 1 ? "" : "s"
+          }), waiting ${Math.round(wait / 1000)}s ` +
             `(${Math.round(spentOnRateLimit / 1000)}s of ${Math.round(cfg.rateLimitBudgetMs / 1000)}s hold): ${err.message}`,
         );
         if (err.limiterAdvice && limitedTries === 1)
           log.warn(`embed rate limit: ${err.limiterAdvice}`);
+        if (limitedTries === 1 && cfg.provider === "openrouter") {
+          const note = await routingNote(cfg.model);
+          if (note) log.warn(`embed rate limit: ${note}`);
+        }
         // Only a rate limit is everyone's problem. Stalling every other request for one timeout
         // would throw away throughput for nothing.
         pauseAll(wait, cfg);

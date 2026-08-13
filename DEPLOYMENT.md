@@ -374,13 +374,15 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
 - **backend init error (chroma/qdrant)** — the DB isn't reachable at its URL; or use `VECTOR_BACKEND=lancedb` (embedded, zero-setup).
 - **first query slow (transformers)** — the model is downloading/loading on first use; subsequent calls are fast.
 - **empty retrieval after changing embedding model** — reset the affected collections and re-ingest; vectors are model-specific.
-- **`embedding provider 429` during a bulk ingest** — the key is over a requests-per-minute limit.
-  The service waits a rate limit *out* rather than retrying through it: the wait starts at
-  `EMBED_RATE_LIMIT_WAIT_MS` (20s, sized for a per-minute window), escalates, and honours
-  `Retry-After` or `X-RateLimit-Reset` when the provider sends one. The pause is process-wide, hedging
-  stands down for a minute, and each 429 leaves an extra `EMBED_PACE_STEP_MS` gap between every later
-  request (up to `EMBED_PACE_MAX_MS`, decaying after five quiet minutes) so the run does not sprint
-  back into the next window.
+- **`embedding provider 429`** — something refused the embedding request. The service waits it *out*
+  rather than retrying through it: the wait starts at `EMBED_RATE_LIMIT_WAIT_MS` (**1s** as of v1.3.1,
+  doubling on each further refusal) and honours `Retry-After` or `X-RateLimit-Reset` when the provider
+  sends one. The pause is process-wide and hedging stands down for a minute.
+  Adaptive self-pacing — an extra `EMBED_PACE_STEP_MS` gap added to every later request after each
+  429, up to `EMBED_PACE_MAX_MS` — is **off by default** as of v1.3.1. It assumed a 429 meant "the
+  account cannot take requests at this rate", which is only true of `[account limit]`; applied to an
+  `[upstream limit]` it slowed a run that was not the cause and left the service paced for minutes
+  after the event had passed. Turn it on only for a limit you have measured and know to be the key's.
   **Read the log line before changing anything — it names WHICH limiter refused, and the two have
   opposite remedies:**
   - `[account limit: ...]` is OpenRouter's own cap on the key, and it carries the numbers from the
@@ -388,7 +390,18 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
     model variant.
   - `[upstream limit]` is the model's own provider refusing, relayed verbatim by OpenRouter behind an
     `HTTP 429:` prefix. **Credits cannot change this one** — it is that model's capacity, not your
-    balance — so the levers are a slower rate, fewer requests, or a different model.
+    balance. Nor, often, your rate: the log now reports how many providers can serve the model, and
+    where that is **one**, OpenRouter has nothing to fail over to, so that provider's saturation —
+    caused by anyone's traffic — reaches you as a 429 however slowly you ask. A single-text request
+    being refused seconds after an identical one succeeded is this, not your pacing. The levers are a
+    different model, or embedding locally.
+  **Measure it rather than inferring it: `node scripts/probe-rate.mjs`** talks to the provider
+  directly, bypassing every retry, hedge and pace in the service (they exist to hide the behaviour
+  being measured). `sweep` finds the gap at which refusals stop, `recover` measures how long one
+  actually lasts — which is what `EMBED_RATE_LIMIT_WAIT_MS` should be sized to — `batch` shows one
+  request of N against N of one, and `routing` lists the model's providers. Run it with the service's
+  own environment:
+  `cd /opt/noodlr-memory && set -a && . ./.env && set +a && node scripts/probe-rate.mjs sweep`
   Since v1.2.1 the service holds one HTTP request open for at most `EMBED_RATE_LIMIT_BUDGET_MS`
   (**45s**) before handing the 429 back and letting the caller wait. That is deliberate and replaces a
   10-minute hold: the caller is the side with a progress bar, a cancel button and a resume index, so a
@@ -407,12 +420,11 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
      identical work). A rate limit counts requests, not texts.
      `EMBED_MAX_CHARS_PER_REQUEST` splits any batch that would get too long, so raising it cannot
      produce an oversized body. Try this first.
-  2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min, 6000 ≈ 10/min);
-     the adaptive pacing above only learns after the first refusal, and its ceiling
-     (`EMBED_PACE_MAX_MS`, 30s) is a runaway guard rather than a target. A whole rulebook corpus is
-     only one to two thousand requests at `EMBED_BATCH_SIZE=64`, so even 10/min finishes overnight —
-     for a one-off bulk load, pacing deliberately is far cheaper in wall-clock terms than being
-     refused, since a refusal costs the wait *and* the request.
+  2. **Set `EMBED_MIN_INTERVAL_MS`** to pace requests from the start (1200 ≈ 50/min, 6000 ≈ 10/min) —
+     but only for an `[account limit]`, and preferably one `probe-rate.mjs sweep` has confirmed. A
+     whole rulebook corpus is only one to two thousand requests at `EMBED_BATCH_SIZE=64`, so even
+     10/min finishes overnight, and a refusal costs the wait *and* the request. Pacing does nothing
+     for an `[upstream limit]`, which is why it is no longer applied automatically.
      Since v1.3.0 hedging only ever fires for a **single** text, so a bulk batch is never duplicated
      and `EMBED_HEDGE_MS=0` matters much less than it did; set it anyway for a long bulk run if the
      provider is already refusing.

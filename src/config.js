@@ -90,19 +90,30 @@ export const config = {
     // button and a resume index, so the long wait belongs there: the service rides out a blip, then
     // hands back a 429 and stays paced. Keep this under any proxy read timeout in front of it.
     rateLimitBudgetMs: num("EMBED_RATE_LIMIT_BUDGET_MS", 45000),
-    // First wait after a 429 that carries no Retry-After. A per-minute window does not clear in two
-    // seconds, so starting small only burns the budget reaching the same answer.
-    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 20000),
-    // Once a 429 has arrived, the account demonstrably cannot take requests at full speed, so pace
-    // them from then on instead of bursting into the same wall every window. Doubles per rate limit,
-    // capped, and decays on its own. 0 disables the adaptation.
+    // First wait after a 429 that carries no Retry-After.
     //
-    // The ceiling exists to stop a runaway, NOT to cap compliance, and 6000 (the 1.2.0 default) got
-    // that backwards: 6s is 10 requests a minute, so an upstream provider that wants fewer than that
-    // could never be satisfied and every retry was refused the instant it left. 30s reaches 2/min,
-    // which is slow enough to be nearly anything's floor and still terminates.
+    // 1.1.1 through 1.2.1 set this to 20s on the reasoning that "a per-minute window does not clear
+    // in two seconds". That reasoning was sound and the premise was wrong, and an operator's
+    // OpenRouter generation log is what settled it: a single-text embed returned **200** at
+    // 21:12:00.502 and another was refused ~1.0s later. So the refusal is momentary saturation
+    // upstream, not a rolled account window — and a blip that clears in about a second was being
+    // answered with a 21-second park, which spent the whole hold to arrive at a failure the provider
+    // had already stopped issuing. Start at the observed scale and escalate; Retry-After, when the
+    // provider sends one, still beats any schedule we could invent.
+    rateLimitWaitMs: num("EMBED_RATE_LIMIT_WAIT_MS", 1000),
+    // Self-pacing after a 429: OFF by default as of 1.3.1, and the default is the whole decision.
+    //
+    // The mechanism assumed a 429 proves "the account cannot take requests at this rate", which only
+    // holds for a limit on the key. When the refusal is an upstream model's capacity — shared with
+    // every other OpenRouter caller of that model — our rate was never the cause, so slowing down
+    // cannot fix it and the pacing is pure loss: it applied process-wide, for PACE_DECAY_MS after the
+    // last refusal, to every later request including an interactive query and the next diagnostics
+    // self-test. That is how one transient hiccup came to present as a service that could no longer
+    // run its own self-test. Set EMBED_PACE_MAX_MS above 0 only for a limit you have measured and
+    // know to be the key's; EMBED_MIN_INTERVAL_MS is the honest lever for a known low limit, because
+    // it is a number the operator chose rather than one a failure taught us.
     paceStepMs: num("EMBED_PACE_STEP_MS", 1000),
-    paceMaxMs: num("EMBED_PACE_MAX_MS", 30000),
+    paceMaxMs: num("EMBED_PACE_MAX_MS", 0),
     // Minimum gap between embedding requests, in ms. 0 = as fast as they complete (with the
     // adaptive pacing above as the safety net). Set it when a provider's limit is known and low:
     // 1200 is roughly 50 requests a minute.
