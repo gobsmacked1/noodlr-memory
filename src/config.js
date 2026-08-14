@@ -64,7 +64,17 @@ export const config = {
   qdrantApiKey: str("QDRANT_API_KEY", ""),
   embed: {
     provider: str("EMBED_PROVIDER", "openrouter").toLowerCase(),
-    model: str("EMBED_MODEL", "perplexity/pplx-embed-v1-4b"),
+    // Provider redundancy is a selection criterion for an embedding model, not a footnote. Measured
+    // 2026-08-13 with `probe-rate.mjs routing`: this model is served by three providers (Nebius,
+    // DeepInfra, SiliconFlow) and the previous default, perplexity/pplx-embed-v1-4b, by exactly one.
+    // With one endpoint OpenRouter has nothing to fail over to, so that provider's saturation — caused
+    // by anyone's traffic — arrives as a 429 however slowly you ask; with three the same event is
+    // absorbed invisibly. Switching models is what actually ended a week of refusals that no amount of
+    // batching, backoff or pacing had fixed, because none of them addressed the cause.
+    // NOTE: changing this changes the VECTOR WIDTH, and a collection's width is fixed when its table is
+    // first written. An existing store must be purged and re-ingested; mixing the two makes every query
+    // against an older silo fail on a dimension mismatch.
+    model: str("EMBED_MODEL", "qwen/qwen3-embedding-8b"),
     baseUrl: str("EMBED_BASE_URL", ""),
     apiKey: str("EMBED_API_KEY", ""),
     // A requests-per-minute limit counts REQUESTS, not texts, so this is the first and largest

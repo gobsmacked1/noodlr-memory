@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------------------------
 // CONFIG (same variables as the service, so this measures YOUR configuration):
 //   EMBED_PROVIDER   openrouter | custom          (default openrouter)
-//   EMBED_MODEL      embedding model slug         (default perplexity/pplx-embed-v1-4b)
+//   EMBED_MODEL      embedding model slug         (default qwen/qwen3-embedding-8b)
 //   EMBED_BASE_URL   for provider=custom (OpenAI-compatible base, no /embeddings)
 //   EMBED_API_KEY    the key. Required for openrouter.
 //
@@ -27,7 +27,7 @@
 //   node scripts/probe-rate.mjs recover              # provoke a 429, then retry at 0.25s .. 16s to
 //                                                    # measure how long a refusal actually lasts
 //   node scripts/probe-rate.mjs batch [n]            # 1 request of n texts vs n of 1, same work
-//   node scripts/probe-rate.mjs routing              # how many providers can serve the model
+//   node scripts/probe-rate.mjs routing [slug]       # how many providers can serve a model (no key)
 //
 // On the Foundry host, with the service's own environment:
 //   cd /opt/noodlr-memory && set -a && . ./.env && set +a && node scripts/probe-rate.mjs sweep
@@ -38,7 +38,7 @@
 // -----------------------------------------------------------------------------------------------
 
 const provider = (process.env.EMBED_PROVIDER || "openrouter").toLowerCase();
-const model = process.env.EMBED_MODEL || "perplexity/pplx-embed-v1-4b";
+const model = process.env.EMBED_MODEL || "qwen/qwen3-embedding-8b";
 const apiKey = process.env.EMBED_API_KEY || "";
 const baseUrl = process.env.EMBED_BASE_URL || "";
 
@@ -264,19 +264,23 @@ async function batch(n) {
   );
 }
 
-async function routing() {
+// `slug` is optional and defaults to the configured model. Taking an argument is the whole value of
+// this command: the question it answers — "can OpenRouter route around a busy provider for this
+// model" — is one an operator asks about a model they have NOT switched to yet, and it needs no key,
+// so answering it should not require editing the environment and restarting the service first.
+async function routing(slug = model) {
   if (provider !== "openrouter") {
     console.log("routing only applies to OpenRouter.");
     return;
   }
-  const url = `https://openrouter.ai/api/v1/models/${model}/endpoints`;
+  const url = `https://openrouter.ai/api/v1/models/${slug}/endpoints`;
   const res = await fetch(url);
   if (!res.ok) {
     console.log(`Could not read the catalogue (${res.status}).`);
     return;
   }
   const eps = (await res.json())?.data?.endpoints ?? [];
-  console.log(`${model}: ${eps.length} provider endpoint(s)`);
+  console.log(`${slug}: ${eps.length} provider endpoint(s)`);
   for (const e of eps)
     console.log(`  - ${e.provider_name} (ctx ${e.context_length})`);
   if (eps.length === 1)
@@ -312,7 +316,7 @@ try {
       await batch(Number(a) || 16);
       break;
     case "routing":
-      await routing();
+      await routing(a || undefined);
       break;
     default:
       console.log(

@@ -11,7 +11,8 @@ Vector Storage (Data Bank) and VectFox.
 
 - Computes embeddings three ways, so you never have to use a cloud provider if
   you don't want to:
-  - **OpenRouter** (cloud API; default model `perplexity/pplx-embed-v1-4b`),
+  - **OpenRouter** (cloud API; default model `qwen/qwen3-embedding-8b`, chosen because three providers
+    serve it — see the rate-limit note below),
   - a **local OpenAI-compatible server** (`custom`): Ollama, vLLM, llama.cpp, LM Studio,
   - **fully in-process** (`transformers`): Transformers.js runs the model inside this
     service with no external server or key (optional `@huggingface/transformers` dep).
@@ -94,7 +95,24 @@ has opted into sharing a provider block.
 
 ### If a provider rate-limits you
 
-A rate limit counts **requests**, not texts, so the levers in order of effect:
+**Check the model first, before touching any of the tuning below.** How many providers
+serve it decides whether OpenRouter can route around one that is momentarily busy, and
+no key is needed to ask:
+
+```bash
+node scripts/probe-rate.mjs routing qwen/qwen3-embedding-8b   # 3 providers
+node scripts/probe-rate.mjs routing perplexity/pplx-embed-v1-4b  # 1 provider
+```
+
+On a single-provider model, that provider's saturation — caused by anyone's traffic,
+not only yours — reaches you as a 429 however slowly you ask. This is not a theory:
+a week of refusals on `perplexity/pplx-embed-v1-4b` that survived every lever below
+ended immediately on switching to a three-provider model, with no other change. It is
+why the default moved (2026-08-13). Note that models differ in vector width, so
+changing one means `purge-all` and a re-ingest.
+
+If a multi-provider model is still being refused, then the limit plausibly is about
+your request rate, and a rate limit counts **requests** rather than texts:
 
 1. `EMBED_BATCH_SIZE` (default 64) — the same corpus in a quarter of the requests
    at 16 -> 64. `EMBED_MAX_CHARS_PER_REQUEST` splits an over-long batch so raising

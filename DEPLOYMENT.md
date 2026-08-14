@@ -171,8 +171,15 @@ don't switch models without resetting the affected collections.
 
 ```
 EMBED_PROVIDER=openrouter
-EMBED_MODEL=perplexity/pplx-embed-v1-4b
+EMBED_MODEL=qwen/qwen3-embedding-8b
 EMBED_API_KEY=sk-or-...
+```
+
+Before settling on a slug, ask how many providers serve it — it needs no API key, and
+it is the difference between a 429 OpenRouter can route around and one it cannot:
+
+```bash
+node scripts/probe-rate.mjs routing <slug>
 ```
 
 ### Local, in-process (no extra server)
@@ -399,6 +406,12 @@ In Foundry: Noodlr settings → **Memory & Knowledge** window:
     caused by anyone's traffic — reaches you as a 429 however slowly you ask. A single-text request
     being refused seconds after an identical one succeeded is this, not your pacing. The levers are a
     different model, or embedding locally.
+    **This is the fix, not the fallback — checked at the table on 2026-08-13.** A week of refusals on
+    `perplexity/pplx-embed-v1-4b` (one provider) that had survived batching, deduplication, backoff and
+    every wait we tuned ended immediately on switching to `qwen/qwen3-embedding-8b` (three providers),
+    with nothing else changed and no errors at all afterwards. Ask before you commit to a slug, no key
+    required: `node scripts/probe-rate.mjs routing <slug>`. The one cost is that vector widths differ
+    between models, so a switch means `purge-all` and a re-ingest.
     **Measure it rather than inferring it: `node scripts/probe-rate.mjs`** talks to the provider
     directly, bypassing every retry, hedge and pace in the service (they exist to hide the behaviour
     being measured). `sweep` finds the gap at which refusals stop, `recover` measures how long one
