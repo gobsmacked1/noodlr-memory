@@ -17,11 +17,14 @@ Vector Storage (Data Bank) and VectFox.
   - **fully in-process** (`transformers`): Transformers.js runs the model inside this
     service with no external server or key (optional `@huggingface/transformers` dep).
     Keys can live server-side in `.env` or be supplied per-request by the module.
-- Stores vectors in a **pluggable backend**: `chroma` (default), `qdrant`, or
-  `vectra` (file-based, zero external service).
-- Splits memory into independent **collections** by purpose, each resettable on
-  its own: `chat`, `lore`, `rules`, `sheets`, `npc_state`, `factions`, `scenes`,
-  `quests`, `docs`.
+- Stores vectors in a **pluggable backend**: `lancedb` (default, embedded, one table per
+  collection), `vectra` (file-based), `qdrant`, or `chroma` (`VECTOR_BACKEND`).
+- Splits memory into 35 independent **collections** by purpose, each resettable on its own:
+  `system_rules`, `docs`, `unfiltered_chat`, and sixteen campaign topics each split into a
+  `player_*` half (what at least one player knows) and a `gm_*` half (what no player knows) —
+  `locations`, `npc_state`, `calendar`, `chat`, `history`, `lore`, `quests`, `macguffin`, `puzzle`,
+  `goals`, `story_arc`, `factions`, `reputations`, `effects`, `sheets`, `inventory`. The full list
+  with each collection's intent is `src/collections.js`.
 - Chunks ingested text with a **prose/table-aware** chunker so roll tables and
   stat blocks stay intact instead of being shredded across chunk boundaries.
 - **Hybrid retrieval** (on by default): dense semantic search fused with a sparse
